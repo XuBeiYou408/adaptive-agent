@@ -12,44 +12,6 @@ client = OpenAI(
     base_url=os.getenv("DEEPSEEK_API_URL")
 )
 
-
-# ==================== 原版 rag_stream_generate（注释保留） ====================
-# def rag_stream_generate(query, combined_context):
-#     system_prompt = (
-#         "你是一个毫无感情的、极其严谨的企业知识库检索机器人。\n"
-#         "【严格死律】：请【仅仅且只能】基于用户给给定的【本地检索上下文】中明确提及的事实来回答问题。\n"
-#         "1. 如果上下文中没有提到能解答问题的相关核心信息，请不要做任何延伸扩展，直接回答：'抱歉，本地知识库中未查到相关核心信息。'\n"
-#         "2. 严禁动用你原本的预训练通用技术知识去凭空丰富、美化或者脑补答案。上下文里没有的内容，一律视为不存在。"
-#     )
-#     user_prompt = f"""请仔细阅读以下从本地知识库检索出来的关联文档片段，并回答用户的技术问题。
-# 【本地检索上下文】：
-# \"\"\"
-# {combined_context}
-# \"\"\"
-#
-# 【用户问题】：{query}
-# 请给出专业、逻辑清晰、针对性强的技术解答："""
-#     try:
-#         response = client.chat.completions.create(
-#             model="deepseek-chat",
-#             messages=[
-#                 {"role": "system", "content": system_prompt},
-#                 {"role": "user", "content": user_prompt}
-#             ],
-#             temperature=0.0,
-#             stream=True
-#         )
-#
-#         # 循环接收流式增量Token并实时yield出去
-#         for chunk in response:
-#             delta_content = chunk.choices[0].delta.content
-#             if delta_content:
-#                 yield delta_content
-#     except Exception as e:
-#         print(f"\n⚠️ 真实大模型流式生成异常: {e}")
-#         yield f"【系统错误：真实大模型流式生成失败 - {str(e)}】"
-
-
 # ==================== 优化版 rag_stream_generate ====================
 def rag_stream_generate(query, combined_context):
     """
@@ -88,41 +50,6 @@ def rag_stream_generate(query, combined_context):
     except Exception as e:
         print(f"\n⚠️ 真实大模型流式生成异常: {e}")
         yield f"【系统错误：真实大模型流式生成失败 - {str(e)}】"
-
-
-# ==================== 原版 llm_judge_metrics（注释保留） ====================
-# def llm_judge_metrics(query, context, answer, ground_truth):
-#     """
-#     利用大模型裁判，对生成质量进行 0.0 ~ 1.0 的双维度量化打分
-#     """
-#     prompt = f"""你是一个极其严格的 RAG 问答系统全栈评估专家。请对以下内容进行客观打分。
-#
-# 【用户问题】: {query}
-# 【检索到的上下文】: {context}
-# 【系统生成的回答】: {answer}
-# 【黄金标准参考答案】: {ground_truth}
-#
-# 请分别针对以下两个维度给出 0.0 到 1.0 之间的浮点数评分（保留两位小数）：
-# 1. faithfulness (忠实度)：系统生成的回答是否【完全严格基于】检索到的上下文？有没有胡思乱想或夹带上下文里没有的私货？完全基于给 1.0，有任何幻觉或瞎编视情况扣分。
-# 2. answer_relevance (回答相关性)：系统生成的回答是否直接、精准地解答了用户提出的问题？有没有答非所问或兜圈子？完美解答给 1.0。
-#
-# 必须严格以下列 JSON 格式输出，不要包含任何 markdown 标记：
-# {{
-#     "faithfulness": 0.95,
-#     "answer_relevance": 0.88
-# }}"""
-#     try:
-#         response = client.chat.completions.create(
-#             model="deepseek-chat",
-#             messages=[{"role": "user", "content": prompt}],
-#             response_format={"type": "json_object"},
-#             temperature=0.1  # 极低随机性，保证阅卷标准一致
-#         )
-#         return json.loads(response.choices[0].message.content)
-#     except Exception as e:
-#         print(f"⚠️ 裁判打分失败: {e}")
-#         return {"faithfulness": 0.0, "answer_relevance": 0.0}
-
 
 # ==================== 优化版 llm_judge_metrics ====================
 def llm_judge_metrics(query, context, answer, ground_truth):
@@ -195,87 +122,6 @@ def llm_judge_metrics(query, context, answer, ground_truth):
     except Exception as e:
         print(f"⚠️ 裁判打分失败 (API异常): {e}")
         return None  # 返回 None 表示此次评分无效，上层排除
-
-
-# ==================== 原版 run_comprehensive_evaluation（注释保留） ====================
-# def run_comprehensive_evaluation(dataset_path, rerank_limit=60):
-#     if not os.path.exists(dataset_path):
-#         raise FileNotFoundError(f"未找到黄金测试集: {dataset_path}")
-#     with open(dataset_path, "r", encoding="utf-8") as f:
-#         dataset = json.load(f)
-#     total = len(dataset)
-#     # 统计容器初始化
-#     retrieval_hits = 0
-#     mrr_scores = []
-#     ttft_list = []
-#     total_latency_list = []
-#     faithfulness_scores = []
-#     relevance_scores = []
-#
-#     print(f"\n================ 🏢 启动 RAG 评测 (水位线 LIMIT={rerank_limit}) ================")
-#
-#     for idx, case in enumerate(dataset):
-#         query = case["question"]
-#         expected_id = case["expected_dad_id"]
-#         ground_truth = case["ground_truth"]
-#
-#         # ---------------- 1. 检索层评测 ----------------
-#         t_start = time.time()
-#         retrieved_docs = asyncio.run(
-#             zhaohui_and_rerank({"input": query}, rerank_limit=rerank_limit, return_documents=True)
-#         )
-#         is_hit = False
-#         rank_score = 0.0
-#         combined_context_text = ""
-#         for rank_idx, doc in enumerate(retrieved_docs):
-#             source_file = os.path.basename(doc.metadata.get('source', '未知文件'))
-#             page_num = doc.metadata.get('page', 0) + 1
-#             combined_context_text += f"--- 文档片段 {rank_idx + 1} (来源: {source_file} | 页码: 第 {page_num} 页) ---\n"
-#             combined_context_text += doc.page_content.strip() + "\n\n"
-#             if not is_hit and doc.metadata.get("dad_id") == expected_id:
-#                 is_hit = True
-#                 rank_score = 1.0 / (rank_idx + 1)
-#         if is_hit:
-#             retrieval_hits += 1
-#         mrr_scores.append(rank_score)
-#         # ---------------- 2. 工程层评测 ----------------
-#         ttft_clock = None
-#         stream_gen = rag_stream_generate(query, combined_context_text)
-#         generated_answer = ""
-#         for chunk in stream_gen:
-#             if ttft_clock is None:
-#                 ttft_clock = time.time()
-#             generated_answer += chunk
-#         t_end = time.time()
-#         ttft_ms = (ttft_clock - t_start) * 1000 if ttft_clock else 0
-#         total_latency_ms = (t_end - t_start) * 1000
-#         ttft_list.append(ttft_ms)
-#         total_latency_list.append(total_latency_ms)
-#
-#         # ---------------- 生成层评测 ----------------
-#         judge_res = llm_judge_metrics(query, combined_context_text, generated_answer, ground_truth)
-#         faithfulness_scores.append(judge_res["faithfulness"])
-#         relevance_scores.append(judge_res["answer_relevance"])
-#
-#         status_icon = "🎯" if is_hit else "❌"
-#         print(
-#             f"条目 [{idx + 1}/{total}] {status_icon} | TTFT: {ttft_ms:.0f}ms | 忠实度: {judge_res['faithfulness']:.2f} | 相关性: {judge_res['answer_relevance']:.2f}")
-#
-#     # ==================== 汇总全栈大盘数据 ====================
-#     print("\n" + "=" * 20 + "  RAG 生产就绪度大盘看板 " + "=" * 20)
-#     print("【1. 检索质量层 (Retrieval Pipeline)】")
-#     print(f" 🔹 Hit Rate @ 5 (知识命中率)   : {(retrieval_hits / total) * 100:.2f} %")
-#     print(f" 🔹 MRR @ 5 (平均倒数排名)      : {sum(mrr_scores) / total:.4f}")
-#
-#     print("\n【2. 工程性能层 (System Engineering)】")
-#     print(f" 🔹 Avg TTFT (平均首字延迟)     : {sum(ttft_list) / total:.1f} ms  (核心体验指标)")
-#     print(f" 🔹 Avg Latency (平均端到端时延) : {sum(total_latency_list) / total:.1f} ms")
-#
-#     print("\n【3. 生成质量层 (LLM Generation / Ragas Triad)】")
-#     print(f" 🔹 Faithfulness (纯净忠实度)   : {sum(faithfulness_scores) / total:.4f}  (防护幻觉红线)")
-#     print(f" 🔹 Answer Relevance (答案相关性): {sum(relevance_scores) / total:.4f}")
-#     print("=" * 70 + "\n")
-
 
 # ==================== 优化版 run_comprehensive_evaluation ====================
 def run_comprehensive_evaluation(dataset_path, rerank_limit=60):
