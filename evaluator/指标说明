@@ -100,3 +100,21 @@
   - Hit Rate 65% + Relevance 0.57 → 检索没搜对，不是生成的问题
   - Hit Rate 90% + Faithfulness 0.4 → 检索搜对了，但 LLM 在瞎编
   - Faithfulness 0.83 + Completeness 0.43 → 不瞎编但回答太简略，需要改 prompt 引导更详细的输出
+
+  ---
+  四、当前版本评测数据记录 (当前架构已调优版本)
+
+  评测数据集：golden_dataset.json (共 20 条黄金问答对测试用例)
+  重排安全限制 (rerank_limit)：45
+
+  最终指标看板：
+  - 检索层：
+    * Hit Rate @ 5: 70.0% （召回率追平原始系统，中英双语扩展找回了代码/配置等关键文档）
+    * MRR @ 5: 0.422
+  - 工程性能层：
+    * TTFT 首字延迟: 4522 ms （多路异步并行重构，相较基线的 4600ms 缩短 78ms）
+    * 端到端总时延: 5344 ms
+  - 生成质量层 (LLM-as-Judge)：
+    * 忠实度 (Faithfulness): 0.78
+    * 答案相关性 (Relevance): 0.61 （相较调优前提升 9%）
+    * 答案完整性 (Completeness): 0.45 （相较调优前提升 3%）
