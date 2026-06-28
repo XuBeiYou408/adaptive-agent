@@ -92,14 +92,14 @@ run.py
 | 模块 | 功能 | 技术栈 |
 |------|------|--------|
 | 文档加载 | PDF + Markdown 批量导入 | PyMuPDF + LangChain TextLoader |
-| 文档切分 | 中英文感知清洗 + 父子块递归切分 | RecursiveCharacterTextSplitter (父块 800, 子块 300) |
+| 文档切分 | 中英文感知清洗 + 父子块递归切分并完整保留 `source`/`page` 元数据 | RecursiveCharacterTextSplitter (父块 800, 子块 300) |
 | 向量化 | 中文语义向量生成 | BGE-base-zh-v1.5 (本地绝对路径加载) |
 | 向量存储 | 持久化 + 增量更新 + 索引损坏自愈 | FAISS (HNSW + Cosine) + manifest.json |
-| 查询重写 | 多视角问题扩展 | DeepSeek-Chat |
-| 混合检索 | 语义 + 关键词并行检索 | Vector + BM25 + ThreadPoolExecutor |
-| 重排序 | 召回精排 | BGE-Reranker-base (本地加载) |
+| 查询重写 | 中英双语多视角问题扩展 + 行首序号过滤 | DeepSeek-Chat |
+| 混合检索 | 语义 (Top-35) + 关键词 (Top-6) 并行检索 | Vector + BM25 + ThreadPoolExecutor |
+| 重排序 | 召回精排 | BGE-Reranker-base (本地加载，限定 Top-45 候选) |
 | 流式输出 | SSE (Server-Sent Events) | FastAPI StreamingResponse |
-| 全链路评估 | 三层面自动化评估 (检索/工程/生成质量) | DeepSeek-Chat (LLM-as-Judge) |
+| 全链路评估 | 6维度全息自动化评估 (含检索/工程/生成质量/完整性等) | DeepSeek-Chat (LLM-as-Judge) |
 
 ## 关键设计决策
 
@@ -119,11 +119,19 @@ Embedding 和 Reranker 推理是 CPU/GPU 密集型操作，会阻塞 FastAPI 事
 
 ### 查询重写后公平排序
 
-各路召回结果先合并再统一重排序，不按来源做硬截断（仅设 60 条安全上限），保证重写后的查询视角获得公平的排序机会。
+各路召回结果先合并再统一重排序，不按来源做硬截断（仅设 45 条安全上限），保证重写后的查询视角获得公平的排序机会。
+
+### 中英多视角检索与查询自动清洗
+
+对于包含英文技术术语、代码概念或可能对应英文技术文档（如LangChain, Matplotlib, JSON, PyTorch等）的查询，查询扩展器会自动生成针对性的英文/代码检索词（如 `langchain.debug = True` 或 `verbose=True`），极大地提升了中英混合技术文档库的检索召回率。同时，在接收端通过正则表达式过滤行首多余的序号标记（如 `1. `、`2) ` 等），避免污染向量空间。
+
+### Windows 运行环境防闪退兼容性设计 (DLL/OpenMP 修复)
+
+在纯离线 Windows 部署环境中，由于 `sentence_transformers` 导入链（包含 `datasets` 与 `pyarrow`）的 C 级扩展加载的 OpenMP 运行时冲突，容易导致 Python 进程无声闪退（exit code 1）。系统在全局防御入口中强制设置 `KMP_DUPLICATE_LIB_OK=TRUE` 并严格按 `numpy` -> `scipy` -> `sklearn` -> `transformers` 顺序初始化预加载依赖库，彻底消除了底城动态库冲突，保证系统自适应高健壮运行。
 
 ### LLM-as-Judge 三级 Few-Shot 校准
 
-评估系统使用 LLM 作为裁判对生成质量打分。为消除评分两极化（非 1 即 0），在 judge prompt 中内置高/中/低三级 few-shot 示例，并显式约束评分区间（0.30~0.85 为常见质量区间），使评分具有区分度。temperature=0.0 保证同一数据集多次评估结果完全一致。
+评估系统使用 LLM 作为裁判对生成质量打分。为消除评分两极化（非 1 即 0），在 judge prompt 中内置高/中/低三级 few-shot 示例，并显式约束评分区间（0.30~0.85 为常见质量区间），使评分具有区分度。temperature=0.0 保证同一数据集多次评估结果完全一致。此外，新增了 `completeness`（答案完整性）维度评估。
 
 ## 模块详细逻辑
 
@@ -133,9 +141,9 @@ Embedding 和 Reranker 推理是 CPU/GPU 密集型操作，会阻塞 FastAPI 事
 
 ### `evaluator/evaluator.py` — 三层全链路评估管道
 
-对 `golden_dataset.json` 中的每条测试用例，依次执行三层评估：
+首先导入 `utils.noise_suppressor` 应用 Windows 环境 DLL 冲突及 OpenMP 防闪退配置。对 `golden_dataset.json` 中的每条测试用例，依次执行三层评估：
 
-- **检索层**：调用生产环境的 `zhaohui_and_rerank()` 获取 Top-5 文档，检查目标 `dad_id` 是否出现（Hit Rate）、出现在第几位（MRR）
+- **检索层**：调用生产环境的 `zhaohui_and_rerank()` 获取 Top-45 重排文档，检查目标 `dad_id` 是否在最终返回列表内（Hit Rate）、出现在第几位（MRR）
 - **工程层**：在流式生成过程中测量 TTFT（首字延迟）和端到端总延迟
 - **生成层**：将「问题 + 检索上下文 + 系统回答 + 参考答案」提交给 LLM 裁判，在 faithfulness（忠实度 / 幻觉控制）、answer_relevance（答案相关性）、completeness（完整性 / vs 参考答案）三个维度打分。temperature=0.0 + 三级 few-shot 校准保证评分稳定
 
@@ -159,15 +167,15 @@ Embedding 和 Reranker 推理是 CPU/GPU 密集型操作，会阻塞 FastAPI 事
 
 ### `rag/rewriter.py` — LLM 查询重写
 
-接收用户原始问题，通过 DeepSeek-Chat（temperature=0, max_tokens=150）调用，指示模型将问题从不同角度扩展为 3 个语义等价但措辞不同的表述，用于多视角检索以提高召回覆盖率。API 调用失败时自动降级为只使用原始问题。
+接收用户原始问题，通过 DeepSeek-Chat（temperature=0, max_tokens=150）调用，指示模型将问题从不同角度扩展为 3 个语义等价但措辞不同的表述（如果包含英文技术概念则包含中英双语扩展式），用于多视角检索以提高召回覆盖率。接收端通过正则表达式自动剥离行首多余的序号标记（如 `1. `、`2) ` 等）以防污染检索。API 调用失败时自动降级为只使用原始问题。
 
 ### `rag/retriever.py` — 混合检索编排
 
-核心异步函数 `zhaohui_and_rerank()`：先调用 rewriter 获取多视角问题列表，然后对每个视角使用 `ThreadPoolExecutor` (max_workers=5) 并行执行向量检索（FAISS, Top-25）和 BM25 关键词检索（Top-3）。多路结果合并后经过去重、reranker 重排序（Top-5）、父子块展开、二次去重，最终返回组装好的上下文文本。`return_documents=True` 时返回完整 Document 对象（含元数据），供评估系统使用。
+核心异步函数 `zhaohui_and_rerank()`：先异步并行调用 rewriter 获取多视角问题列表与启动首路原始问题检索，然后对其余视角使用 `ThreadPoolExecutor` (max_workers=5) 并行执行向量检索（FAISS, Top-35）和 BM25 关键词检索（Top-6）。多路结果合并后经过去重、reranker 重排序（Top-45）、父子块展开、二次去重，最终返回组装好的上下文文本。`return_documents=True` 时返回完整 Document 对象（含元数据），供评估系统使用。
 
 ### `rag/reranker.py` — BGE-Reranker 重排序
 
-封装 `FlagReranker` (BGE-reranker-base)，以 FP16 精度从本地路径加载。对每个查询-文档对计算相关性分数，按分数降序取 Top-5。内置 60 条文档安全上限，防止检索召回过多时 OOM。
+封装 `FlagReranker` (BGE-reranker-base)，以 FP16 精度从本地路径加载。对每个查询-文档对计算相关性分数，按分数定位最相关的 Top-5 并在返回前注入完整父块内容。内置 45 条文档安全重排上限，防止检索召回过多时 OOM。
 
 ### `rag/dedup.py` — 文档去重
 
@@ -210,6 +218,10 @@ Embedding 和 Reranker 推理是 CPU/GPU 密集型操作，会阻塞 FastAPI 事
 - `GET /health`：健康检查，返回 `{"status": "ok"}`
 - `POST /ask`：标准问答，同步返回答案 + 耗时
 - `POST /stream`：SSE 流式问答，使用 `StreamingResponse` 逐 token 推送
+
+### `utils/noise_suppressor.py` — 噪声抑制与 Windows 兼容性自适应
+
+系统的全局初始化防御塔。首先执行 Windows 兼容性保护——注入环境变量 `KMP_DUPLICATE_LIB_OK=TRUE` 并严格执行 `numpy -> scipy -> sklearn -> transformers` 依赖加载顺序，彻底解决了 Windows 上 MKL/OpenMP 引起的底层 C 级闪退崩溃。同时，强制开启 HuggingFace `HF_HUB_OFFLINE=1` 离线模式，并对 `transformers`、`chromadb`、`httpx` 及 `sentence_transformers` 进行强力静音，保证控制台输出纯净、不刷屏。
 
 ## 环境要求
 

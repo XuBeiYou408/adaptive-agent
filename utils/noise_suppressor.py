@@ -1,7 +1,11 @@
 # ==================== 1. 强力静音消红防御塔（必须放在最顶部） ====================
 import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"  # 解决 Windows 上 OpenMP 冲突导致的 Python 闪退
 os.environ["HF_HUB_OFFLINE"] = "1"  # 强制 HuggingFace 离线模式，必须在 import transformers 之前
 import warnings
+import numpy
+import scipy
+import sklearn  # 必须在 sentence_transformers 之前导入，解决 Windows MKL/OpenMP DLL 冲突
 import transformers
 transformers.utils.logging.set_verbosity_error()#强制 HuggingFace 的 transformers 库关闭所有非错误的提示
 warnings.filterwarnings("ignore")  # 屏蔽所有 Python 级别的警告（Deprecation, UserWarning 等）

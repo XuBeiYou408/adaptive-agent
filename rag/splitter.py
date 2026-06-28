@@ -33,7 +33,7 @@ def pdf_qingxi(daichulipdf):
         d_content = d_doc.page_content
         metadata = d_doc.metadata.copy()
         metadata['dad_id'] = d_id
-        temp_docs = Document(page_content=d_content, metadata={'dad_id':d_id})
+        temp_docs = Document(page_content=d_content, metadata=metadata)
         sub_chunks = son_qiefenguize.split_documents([temp_docs])#子级规则拆父块
         for s_doc in sub_chunks:
             s_doc.metadata['dad_id'] = d_id

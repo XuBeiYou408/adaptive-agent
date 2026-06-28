@@ -1,12 +1,13 @@
+import re
 import traceback
 from rag.llm import rewrite_llm
 from rag.prompts import rewrite_prompt
 
 # ==================== 定义查询重写（Rewrite）行为 ====================
 
-def question_rewriter(question):
+async def question_rewriter(question):
     try:
-        response = rewrite_llm.invoke(rewrite_prompt.format_messages(question=question))
+        response = await rewrite_llm.ainvoke(rewrite_prompt.format_messages(question=question))
         raw_text = response.content
     except Exception as e:
         print(f"[Rewriter] ❌ LLM调用失败: {type(e).__name__}: {e}")
@@ -15,10 +16,14 @@ def question_rewriter(question):
         return [question]
 
     rewrites = raw_text.strip().split('\n')
-    cleaned_rewrites = [
-        rew.strip() for rew in rewrites
-        if rew.strip() and not rew.startswith(("好的", "这是", "以下", "要求"))
-    ]
+    cleaned_rewrites = []
+    for rew in rewrites:
+        rew_str = rew.strip()
+        if rew_str and not rew_str.startswith(("好的", "这是", "以下", "要求")):
+            # 去除可能存在的行首数字标记（例如 "1. ", "2) ", "3、" 等）
+            cleaned_q = re.sub(r'^\d+[\s\.\)、\-]*', '', rew_str).strip()
+            if cleaned_q:
+                cleaned_rewrites.append(cleaned_q)
     queries = [question] + cleaned_rewrites[:2]
 
     if len(queries) <= 1:

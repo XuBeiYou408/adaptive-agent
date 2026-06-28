@@ -1,3 +1,4 @@
+import utils.noise_suppressor # noqa: F401 — 必须在所有其他导入之前执行
 import os
 import json
 import time
@@ -20,7 +21,7 @@ def rag_stream_generate(query, combined_context):
     """
     system_prompt = (
         "你是一个毫无感情的、极其严谨的企业知识库检索机器人。\n"
-        "【严格死律】：请【仅仅且只能】基于用户给给定的【本地检索上下文】中明确提及的事实来回答问题。\n"
+        "【严格死律】：请【仅仅且只能】基于用户给定的【本地检索上下文】中明确提及的事实来回答问题。\n"
         "1. 如果上下文中没有提到能解答问题的相关核心信息，请不要做任何延伸扩展，直接回答：'抱歉，本地知识库中未查到相关核心信息。'\n"
         "2. 严禁动用你原本的预训练通用技术知识去凭空丰富、美化或者脑补答案。上下文里没有的内容，一律视为不存在。"
     )
@@ -124,7 +125,7 @@ def llm_judge_metrics(query, context, answer, ground_truth):
         return None  # 返回 None 表示此次评分无效，上层排除
 
 # ==================== 优化版 run_comprehensive_evaluation ====================
-def run_comprehensive_evaluation(dataset_path, rerank_limit=60):
+def run_comprehensive_evaluation(dataset_path, rerank_limit=45):
     """
     优化点：
     1. LLM-as-Judge 异常数据（None）不计入统计，单独汇报
@@ -339,4 +340,4 @@ def run_comprehensive_evaluation(dataset_path, rerank_limit=60):
 
 if __name__ == "__main__":
     DATASET_PATH = os.path.join(LOCAL_DB_PATH, "golden_dataset.json")
-    run_comprehensive_evaluation(DATASET_PATH, rerank_limit=60)
+    run_comprehensive_evaluation(DATASET_PATH, rerank_limit=45)
