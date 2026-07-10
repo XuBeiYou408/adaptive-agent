@@ -1,10 +1,10 @@
+from config import LOCAL_DB_PATH, folder_path
 import os
 import pickle#保存docstore + 索引映射
 import json
 import hashlib#计算文件内容 → hash值，检测文件是否变化
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyMuPDFLoader, TextLoader
-from config import LOCAL_DB_PATH,folder_path
 from rag.embeddings import embeddings
 from rag.splitter import pdf_qingxi, md_qingxi
 
@@ -66,7 +66,10 @@ def sao_miao_geng_xin(target_folder):
 
 # ==================== 全量重建和动态增量更新 ====================
 def quan_liang_chong_jian(current_states):
-    print("🔄正在全量重建向量数据库...")
+    try:
+        print("🔄正在全量重建向量数据库...")
+    except UnicodeEncodeError:
+        print("[DB] 正在全量重建向量数据库...")
     from rag.loader import load_all_documents
     pdf_list ,md_list ,_ = load_all_documents()
     result_pdf = pdf_qingxi(pdf_list)
@@ -82,7 +85,10 @@ def quan_liang_chong_jian(current_states):
     return  db,safe_docs
 
 def zeng_liang_zhui_jia(added_files,current_states,old_manifest):
-    print(f"🚀发现{len(added_files)}个新入库的文件，正在更新数据库")
+    try:
+        print(f"🚀发现{len(added_files)}个新入库的文件，正在更新数据库")
+    except UnicodeEncodeError:
+        print(f"[DB] 发现{len(added_files)}个新入库的文件，正在更新数据库")
     db = _faiss_load(LOCAL_DB_PATH)# 先将本地已有的、健康的向量数据库加载到内存中
     new_chunks =[]
     for file_path in added_files:# 只循环处理新加入的绝对路径列表
@@ -94,12 +100,18 @@ def zeng_liang_zhui_jia(added_files,current_states,old_manifest):
                 loader = TextLoader(file_path,encoding='utf-8')
                 new_chunks.extend(md_qingxi(loader.load()))
         except Exception as e:
-            print(f'⚠️新文件加入失败{os.path.basename(file_path)}:{e}')
+            try:
+                print(f'⚠️新文件加入失败{os.path.basename(file_path)}:{e}')
+            except UnicodeEncodeError:
+                print(f'[WARN] 新文件加入失败{os.path.basename(file_path)}:{e}')
     safe_new_chunks =[d for d in new_chunks if d.page_content and d.page_content.strip()]
     if safe_new_chunks:#工业级核心算子：只为新增加的知识节点计算 Embedding，并在原有的向量空间矩阵中做追加，零开销、免重构
         db.add_documents(safe_new_chunks)
         _faiss_save(db, LOCAL_DB_PATH)# 追加完成，立刻持久化覆盖本地老索引文件
-        print(f"🚀更新向量数据库成功，已加入{len(safe_new_chunks)}个新文件")
+        try:
+            print(f"🚀更新向量数据库成功，已加入{len(safe_new_chunks)}个新文件")
+        except UnicodeEncodeError:
+            print(f"[DB] 更新向量数据库成功，已加入{len(safe_new_chunks)}个新文件")
     for f in added_files:
         old_manifest[f] = current_states[f]
     with open(ANIFEST_PATH, "w",encoding="utf-8") as f:
@@ -132,7 +144,10 @@ def qi_dong_lu_jin():
         pdf_list ,md_list ,_ = load_all_documents()
         safe_docs = pdf_qingxi(pdf_list) + md_qingxi(md_list)
     else:
-        print("🚀向量数据库已存在且无需更新，急速加载中.....")
+        try:
+            print("🚀向量数据库已存在且无需更新，急速加载中.....")
+        except UnicodeEncodeError:
+            print("[DB] 向量数据库已存在且无需更新，急速加载中.....")
         db = _faiss_load(LOCAL_DB_PATH)
         from rag.loader import load_all_documents
         pdf_list ,md_list ,_ = load_all_documents()
