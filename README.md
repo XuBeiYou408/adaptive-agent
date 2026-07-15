@@ -10,21 +10,21 @@
 
 ```mermaid
 graph TD
-    User([用户输入]) --> Router{意图分类路由器 rag/router.py}
-    Router -- 简单检索 (simple_rag) --> RAG[RAG 知识库检索直连通道]
-    Router -- 长文总结 (summarize) --> Summarize[文档摘要直连通道]
-    Router -- 逻辑计算/时效推理 (agent) --> Agent[ReAct Agent 自主规划环]
+    User(["用户输入"]) --> Router{"意图分类路由器 rag/router.py"}
+    Router -- "简单检索 (simple_rag)" --> RAG["RAG 知识库检索直连通道"]
+    Router -- "长文总结 (summarize)" --> Summarize["文档摘要直连通道"]
+    Router -- "逻辑计算/时效推理 (agent)" --> Agent["React Agent 自主规划环"]
     
-    subgraph Agent 执行引擎 (rag/agent.py)
-        Agent --> Memory[(自适应记忆网关 rag/memory.py)]
-        Agent --> Tools{Toolbox 协同工具箱}
-        Tools -- 知识库召回 --> RAG_Tool[RAG Tool]
-        Tools -- 物理沙箱 --> Calc_Tool[Calculator Tool]
-        Tools -- 互联网检索 --> Search_Tool[Search Tool]
+    subgraph agent_engine ["Agent 执行引擎 (rag/agent.py)"]
+        Agent --> Memory[("自适应记忆网关 rag/memory.py")]
+        Agent --> Tools{"Toolbox 协同工具箱"}
+        Tools -- "知识库召回" --> RAG_Tool["RAG Tool"]
+        Tools -- "物理沙箱" --> Calc_Tool["Calculator Tool"]
+        Tools -- "互联网检索" --> Search_Tool["Search Tool"]
     end
     
-    Memory -. 探测降级 .- SQLite[(本地 SQLite)]
-    Memory -. 生产首选 .- Redis[(分布式 Redis)]
+    Memory -. "探测降级" .- SQLite[("本地 SQLite")]
+    Memory -. "生产首选" .- Redis[("分布式 Redis")]
 ```
 
 ---
