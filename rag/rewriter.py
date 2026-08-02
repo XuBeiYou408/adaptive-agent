@@ -1,18 +1,25 @@
 import re
-import traceback
+import logging
+from typing import List
 from rag.llm import rewrite_llm
 from rag.prompts import rewrite_prompt
+from utils.resilience import with_retry
 
-# ==================== 定义查询重写（Rewrite）行为 ====================
+logger = logging.getLogger(__name__)
 
-async def question_rewriter(question):
+# ==================== 定义查询重写（Rewrite）行为 (T9) ====================
+@with_retry(max_retries=2, timeout=15.0, fallback=None)
+async def _call_rewrite_llm(question: str):
+    return await rewrite_llm.ainvoke(rewrite_prompt.format_messages(question=question))
+
+async def question_rewriter(question: str) -> List[str]:
     try:
-        response = await rewrite_llm.ainvoke(rewrite_prompt.format_messages(question=question))
+        response = await _call_rewrite_llm(question)
+        if response is None:
+            return [question]
         raw_text = response.content
     except Exception as e:
-        print(f"[Rewriter] ❌ LLM调用失败: {type(e).__name__}: {e}")
-        traceback.print_exc()
-        print(f"[Rewriter] ⚠️ 降级为原始问题，不做重写")
+        logger.warning(f"查询重写过程触发异常 ({e})，降级使用原始问题")
         return [question]
 
     rewrites = raw_text.strip().split('\n')
@@ -20,17 +27,16 @@ async def question_rewriter(question):
     for rew in rewrites:
         rew_str = rew.strip()
         if rew_str and not rew_str.startswith(("好的", "这是", "以下", "要求")):
-            # 去除可能存在的行首数字标记（例如 "1. ", "2) ", "3、" 等）
             cleaned_q = re.sub(r'^\d+[\s\.\)、\-]*', '', rew_str).strip()
             if cleaned_q:
                 cleaned_rewrites.append(cleaned_q)
+                
     queries = [question] + cleaned_rewrites[:2]
 
     if len(queries) <= 1:
-        print(f"[Rewriter] ⚠️ 重写结果为空！原始响应:\n{raw_text}")
+        logger.warning(f"查询重写结果未生成附加视角，原始响应: {raw_text[:60]}")
     else:
-        # 简洁输出：只显示原始问题 + 生成视角数
         short_q = question[:40] + "..." if len(question) > 40 else question
-        print(f"[Rewriter] \"{short_q}\" → {len(queries)} 个视角")
+        logger.info(f"查询重写成功: \"{short_q}\" → 生成 {len(queries)} 个多维度视角")
 
     return queries

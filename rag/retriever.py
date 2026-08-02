@@ -1,28 +1,85 @@
-from concurrent.futures import ThreadPoolExecutor  # 从 Python 标准库中导入线程池执行器
-from langchain_community.retrievers import BM25Retriever
+import os
+import pickle
+import hashlib
+import logging
 import asyncio
-from rag.vector_store import xiangliangshujuku, safe_all_wenjian
+from typing import List, Union, Dict, Any, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from langchain_community.retrievers import BM25Retriever
+from langchain_core.documents import Document
+from config import TOP_K_RECALL, LOCAL_DB_PATH, RERANK_LIMIT
+from rag.vector_store import get_vector_store
 from rag.rewriter import question_rewriter
 from rag.reranker import reranker_doc
 from rag.dedup import deduplicate_docs
-from langchain_core.documents import Document
 
-# ==================== 定义检索（retriever）召回行为采用混合检索（Hybrid） ====================
-TOP_K_RECALL = 35       # 每次检索召回的候选文档数
-FINAL_TOP_K = 5          # 消融实验统一最终返回给评估器的文档数
-zhaohui = xiangliangshujuku.as_retriever(search_kwargs={"k": TOP_K_RECALL})  # 召回的是Document数据
+logger = logging.getLogger(__name__)
 
-try:
-    import rank_bm25
-    bm25 = BM25Retriever.from_documents(safe_all_wenjian)  # BM25关键词检索
-    bm25.k = TOP_K_RECALL
-    print(" BM25 模型加载完成。")
-except Exception as e:
-    bm25 = None
-    print(f"BM25 模型加载失败：{e}")
+BM25_CACHE_PATH = os.path.join(LOCAL_DB_PATH, "bm25_cache.pkl")
 
-# ==================== 定义上下文如何拼接 ====================
-def huidalaiyuan(docs):
+# ==================== 优化点 (T8): BM25 磁盘缓存工厂 ====================
+def get_or_build_bm25(documents: List[Document]) -> Union[BM25Retriever, None]:
+    if not documents:
+        return None
+    try:
+        doc_hash = hashlib.md5(
+            (str(len(documents)) + documents[0].page_content[:100]).encode("utf-8")
+        ).hexdigest()
+        
+        if os.path.exists(BM25_CACHE_PATH):
+            try:
+                with open(BM25_CACHE_PATH, "rb") as f:
+                    cached = pickle.load(f)
+                if isinstance(cached, dict) and cached.get("hash") == doc_hash:
+                    logger.info("BM25 索引命中磁盘缓存，已快速载入")
+                    return cached["retriever"]
+            except Exception as e:
+                logger.warning(f"读取 BM25 磁盘缓存失败: {e}，将重新构建")
+
+        logger.info("正在构建 BM25 关键词检索索引...")
+        bm25_retriever = BM25Retriever.from_documents(documents)
+        bm25_retriever.k = TOP_K_RECALL
+        
+        try:
+            with open(BM25_CACHE_PATH, "wb") as f:
+                pickle.dump({"hash": doc_hash, "retriever": bm25_retriever}, f)
+            logger.info("BM25 索引已被成功序列化缓存至本地磁盘")
+        except Exception as e:
+            logger.warning(f"写入 BM25 磁盘缓存失败: {e}")
+            
+        return bm25_retriever
+    except Exception as e:
+        logger.error(f"BM25 构建过程异常: {e}")
+        return None
+
+# ==================== 优化点 (T1): 惰性检索器初始化与单例缓存 ====================
+_retriever_cache: Dict[str, Any] = {}
+
+def get_retrievers() -> Tuple[Any, Any]:
+    if "vector" not in _retriever_cache:
+        db, docs = get_vector_store()
+        _retriever_cache["vector"] = db.as_retriever(search_kwargs={"k": TOP_K_RECALL})
+        _retriever_cache["bm25"] = get_or_build_bm25(docs)
+    return _retriever_cache["vector"], _retriever_cache["bm25"]
+
+# 兼容传统全局引用的 Lazy 代理
+class _LazyRetrieverProxy:
+    def invoke(self, query: str) -> List[Document]:
+        vec_retriever, _ = get_retrievers()
+        return vec_retriever.invoke(query)
+
+class _LazyBM25Proxy:
+    def invoke(self, query: str) -> List[Document]:
+        _, bm25_retriever = get_retrievers()
+        if bm25_retriever:
+            return bm25_retriever.invoke(query)
+        return []
+
+zhaohui = _LazyRetrieverProxy()
+bm25 = _LazyBM25Proxy()
+
+# ==================== 定义上下文格式化 ====================
+def huidalaiyuan(docs: List[Document]) -> str:
     results = []
     for i, doc in enumerate(docs, start=1):
         source = doc.metadata.get('source', '未知')
@@ -30,18 +87,29 @@ def huidalaiyuan(docs):
         results.append(f"[文档{i}] 来源: {source}\n{content}")
     return "\n\n".join(results)
 
-# ==================== 进行检索召回和重排及去重 ====================
-def retrieve_single(q):  # 负责针对某一个具体的问题，同时去向量数据库和传统的 BM25 里捞数据
-    docs_vector = zhaohui.invoke(q)
-    docs_bm25 = bm25.invoke(q)[:6] if bm25 else []
+# ==================== 检索召回逻辑 ====================
+def retrieve_single(q: str) -> List[Document]:
+    vec_retriever, bm25_retriever = get_retrievers()
+    docs_vector = vec_retriever.invoke(q)
+    docs_bm25 = bm25_retriever.invoke(q)[:6] if bm25_retriever else []
+    
     for d in docs_vector:
         d.metadata["retriever"] = "vector"
     for d in docs_bm25:
         d.metadata["retriever"] = "bm25"
+        
     return docs_vector + docs_bm25
 
-executor = ThreadPoolExecutor(max_workers=5)# 并行查询(开启线程池)
-async def zhaohui_and_rerank(inputs ,rerank_limit=45,return_documents=False):
+executor = ThreadPoolExecutor(max_workers=5)
+
+async def zhaohui_and_rerank(
+    inputs: Union[Dict[str, str], str],
+    rerank_limit: int = RERANK_LIMIT,
+    return_documents: bool = False
+) -> Union[List[Document], str]:
+    """
+    接收用户问题，投机并行执行查询重写与基础召回，进行重排去重后返回结果。
+    """
     if isinstance(inputs, dict):
         question = inputs['input']
     elif isinstance(inputs, str):
@@ -49,7 +117,6 @@ async def zhaohui_and_rerank(inputs ,rerank_limit=45,return_documents=False):
     else:
         raise TypeError("zhaohui_and_rerank 接收到的 inputs 类型不合法，须为 dict 或 str")
     
-    # 投机/并发检索：并行执行查询重写与对原始问题的第一次检索
     rewriter_task = asyncio.create_task(question_rewriter(question))
     original_retrieval_task = asyncio.to_thread(retrieve_single, question)
     
@@ -65,20 +132,22 @@ async def zhaohui_and_rerank(inputs ,rerank_limit=45,return_documents=False):
     else:
         all_docs = original_docs
 
-    all_docs = deduplicate_docs(all_docs)  # 文档去重
-    chongpaishuju = await asyncio.to_thread(reranker_doc, question, all_docs, rerank_limit)
-    expanded_docs =[]
+    all_docs = deduplicate_docs(all_docs)
+    chongpaishuju = await asyncio.to_thread(rerank_documents, question, all_docs, rerank_limit)
+    
+    expanded_docs = []
     for doc in chongpaishuju:
         if 'dad_content' in doc.metadata:
             dad_doc = Document(
-                page_content =doc.metadata['dad_content'],
-                metadata = doc.metadata
+                page_content=doc.metadata['dad_content'],
+                metadata=doc.metadata
             )
             expanded_docs.append(dad_doc)
         else:
             expanded_docs.append(doc)
+            
     final_docs = deduplicate_docs(expanded_docs)
+    
     if return_documents:
-        return final_docs  # 如果是评测脚本调用，返回原装 List[Document]，保留 metadata 供判定命中
-    return huidalaiyuan(final_docs)#如果是纯字符串输入，说明是 evaluator 本地评测脚本在调用返回原始的 Document 列表，供评测大盘顺畅读取 .page_content 并计算 Hit Rate / MRR
-#输入一个用户问题 → 生成多个查询 → 并行检索文档 → 去重 → Rerank → 返回最终结果。
+        return final_docs
+    return huidalaiyuan(final_docs)

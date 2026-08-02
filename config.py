@@ -4,11 +4,7 @@ import sys
 from dotenv import load_dotenv
 
 # ==================== CUDA 安全检测与自动降级 ====================
-# 原理：
-# 1. 优先检测是否处于 Antigravity 沙箱后台测试环境（通过特征环境变量识别），如果是，直接强制使用 CPU 运行以防显存崩溃。
-# 2. 否则，通过派生子进程预测试 CUDA 实际是否可用。若测试失败（显存不足/驱动故障），同样安全降级为 CPU。
 def _jian_ce_cuda_anquan() -> bool:
-    # 识别智能体后台测试运行特征
     if "ANTIGRAVITY_TRAJECTORY_ID" in os.environ or "ANTIGRAPVITY_TRAJECTORY_ID" in os.environ:
         return False
     try:
@@ -37,6 +33,24 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 # ==================== 本地数据的读取 ====================
 load_dotenv()
 folder_path = os.getenv('YUAN_SUCAI_PATH')
+LOCAL_DB_PATH = os.getenv('LOCAL_DB_PATH', './faiss-db')
 
-# 定义一个本地文件夹路径，数据库文件会自动创建并保存在这里
-LOCAL_DB_PATH = os.getenv('LOCAL_DB_PATH')
+# ==================== 统一系统超参数配置区 ====================
+# 检索链路配置
+TOP_K_RECALL: int = 35          # 向量/BM25 单路召回数
+TOP_K_RERANK: int = 5           # Reranker 精排后保留数
+RERANK_LIMIT: int = 45          # Reranker 输入截断水位线
+REWRITE_QUERY_COUNT: int = 2    # 查询重写扩展视角数
+
+# Agent 调度配置
+AGENT_MAX_ITERATIONS: int = 8   # Agent 最大推理步数
+AGENT_TIMEOUT: int = 120        # Agent 单次会话总超时（秒）
+
+# 记忆与上下文配置 (Claude Code 风格微压缩)
+REDIS_TTL: int = 7200           # Redis 会话缓存 TTL（秒）
+CONTEXT_MAX_TOKENS: int = 4000  # 上下文窗口总 Token 预算
+COMPACTION_THRESHOLD: int = 3000 # 触发微压缩的 Token 阈值
+
+# 模型推理与网络配置
+EMBEDDING_BATCH_SIZE: int = 64  # Embedding 推理批次大小
+LLM_REQUEST_TIMEOUT: int = 30   # LLM API 超时（秒）

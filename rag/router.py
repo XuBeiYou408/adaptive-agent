@@ -1,6 +1,11 @@
+import logging
+from typing import Literal
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from rag.llm import rewrite_llm
+from utils.resilience import with_retry
+
+logger = logging.getLogger(__name__)
 
 # ==================== 意图识别路由 Prompt ====================
 luyou_prompt = ChatPromptTemplate([
@@ -17,21 +22,18 @@ luyou_prompt = ChatPromptTemplate([
     ("user", "{question}")
 ])
 
-# ==================== 系统路由逻辑 ====================
-async def xitong_luyou(question: str) -> str:
+# ==================== 系统路由逻辑 (T9: 渐进式重试与自愈降级) ====================
+@with_retry(max_retries=2, timeout=10.0, fallback="agent")
+async def xitong_luyou(question: str) -> Literal["simple_rag", "summarize", "agent"]:
     """
-    轻量快速的意图分类路由器，用于将用户请求引导至最高效的执行通道。
+    轻量快速的意图分类路由器，带 3 层容灾保护。
     """
-    try:
-        luyou_chain = luyou_prompt | rewrite_llm | StrOutputParser()
-        res = await luyou_chain.ainvoke({"question": question})
-        
-        category = res.strip().lower().replace("'", "").replace('"', "").replace("`", "")
-        # 兼容处理带换行或其他脏字符的情况
-        for cat in ["simple_rag", "summarize", "agent"]:
-            if cat in category:
-                return cat
-                
-        return "agent"  # 无法判定时默认走 Agent 通道以保证兜底能力
-    except Exception as e:
-        return "agent"  # 异常时降级走 Agent 兜底
+    luyou_chain = luyou_prompt | rewrite_llm | StrOutputParser()
+    res = await luyou_chain.ainvoke({"question": question})
+    
+    category = res.strip().lower().replace("'", "").replace('"', "").replace("`", "")
+    for cat in ["simple_rag", "summarize", "agent"]:
+        if cat in category:
+            return cat
+            
+    return "agent"

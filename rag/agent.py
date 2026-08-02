@@ -1,13 +1,16 @@
 import logging
+import asyncio
+from typing import Dict, Any, List
 from langchain_core.prompts import PromptTemplate
 try:
     from langchain.agents import create_react_agent, AgentExecutor
 except ImportError:
     from langchain_classic.agents import create_react_agent, AgentExecutor
 
-from rag.llm import llm
+from config import AGENT_MAX_ITERATIONS, AGENT_TIMEOUT
+from rag.llm import llm, rewrite_llm
 from rag.tools import xiangliang_and_bm25_zhaohui, jisuanqi_tool, wangye_sousuo_tool, wendang_zhaiyao_tool
-from rag.memory import huode_huibao_jiliu
+from rag.memory import huode_huibao_jiliu, compact_history
 
 logger = logging.getLogger(__name__)
 
@@ -15,8 +18,6 @@ logger = logging.getLogger(__name__)
 gongju_list = [xiangliang_and_bm25_zhaohui, jisuanqi_tool, wangye_sousuo_tool, wendang_zhaiyao_tool]
 
 # ==================== 定义 ReAct Prompt 模板 ====================
-# 重点：提示词中明确规范了 Thought, Action, Action Input, Observation, Final Answer 格式，
-# 这是 ReAct Agent 进行多步推理和工具调用的基石。
 react_prompt = PromptTemplate.from_template(
     "你是一个全能的企业级 AI 技术导师，专门解答技术、架构与开发相关问题。\n"
     "为了圆满解答用户的问题，你可以分步骤思考并调用以下工具：\n\n"
@@ -36,49 +37,56 @@ react_prompt = PromptTemplate.from_template(
     "Thought: {agent_scratchpad}"
 )
 
-# ==================== 创建 Agent ====================
+# ==================== 创建 Agent 执行器 ====================
 agent = create_react_agent(llm, gongju_list, react_prompt)
 
-# ==================== 创建 Agent 执行器 ====================
 agent_executor = AgentExecutor(
     agent=agent,
     tools=gongju_list,
     verbose=True,
-    max_iterations=8,                    # 限制最大步数，防死循环
-    handle_parsing_errors=True,          # 容错机制，解析出错时让大模型自我修正
-    return_intermediate_steps=True       # 开启中间步骤返回，支持思维链展示
+    max_iterations=AGENT_MAX_ITERATIONS,
+    handle_parsing_errors=True,
+    return_intermediate_steps=True
 )
 
 # ==================== 会话执行包装函数 ====================
-async def yunxing_agent_session(question: str, session_id: str) -> dict:
+async def yunxing_agent_session(question: str, session_id: str) -> Dict[str, Any]:
     """
-    负责执行多步 Agent 推理，处理多轮对话记忆，并返回结构化的思考过程和最终答案。
+    负责执行多步 Agent 推理，带 Claude Code 同款就地微压缩与 120 秒超时熔断保护。
     """
-    # 1. 获取会话的记忆实例（自动适配 Redis/SQLite）
     history = huode_huibao_jiliu(session_id)
     
-    # 2. 格式化历史消息为纯文本，注入 Prompt
-    messages = history.messages
-    chat_history_str = ""
-    for msg in messages:
-        role = "User" if msg.type == "human" else "AI"
-        chat_history_str += f"{role}: {msg.content}\n"
-        
-    logger.info(f"[Agent] 开始处理会话 {session_id}，历史消息长度: {len(messages)}")
-    
-    # 3. 调用 Agent 执行器进行多步思考
-    response = await agent_executor.ainvoke({
-        "input": question,
-        "chat_history": chat_history_str
-    })
+    # 1. 优化点 (T4): Claude Code 同款就地微压缩 + 强约束摘要
+    chat_history_str = await compact_history(history.messages, rewrite_llm)
+    logger.info(f"[Agent] 开始处理会话 {session_id}，历史已微压缩")
+
+    # 2. 优化点 (T10): asyncio.timeout 超时熔断机制
+    try:
+        async with asyncio.timeout(AGENT_TIMEOUT):
+            response = await agent_executor.ainvoke({
+                "input": question,
+                "chat_history": chat_history_str
+            })
+    except asyncio.TimeoutError:
+        logger.warning(f"[Agent] 会话 {session_id} 执行超时 ({AGENT_TIMEOUT}s)，触发超时熔断降级")
+        return {
+            "answer": "抱歉，由于问题复杂度较高或推理时间过长，触发了系统 120 秒安全超时限制。建议简化提示词或分步骤提问。",
+            "thought_process": [],
+            "tools_used": []
+        }
+    except Exception as e:
+        logger.error(f"[Agent] 推理过程发生异常: {e}")
+        return {
+            "answer": f"系统推理发生异常: {str(e)}",
+            "thought_process": [],
+            "tools_used": []
+        }
     
     final_output = response.get("output", "")
     intermediate_steps = response.get("intermediate_steps", [])
     
-    # 4. 结构化解析思维链步骤
     thought_process = []
     for action, obs in intermediate_steps:
-        # 尝试从 action.log 中提取 Thought 部分
         log = action.log
         thought = log
         if "Action:" in log:
@@ -91,7 +99,6 @@ async def yunxing_agent_session(question: str, session_id: str) -> dict:
             "observation": str(obs)
         })
         
-    # 5. 更新会话历史（双向存入）
     history.add_user_message(question)
     history.add_ai_message(final_output)
     
