@@ -107,13 +107,22 @@ async def yunxing_agent_session(question: str, session_id: str) -> Dict[str, Any
         chat_history_str = await compact_history(messages, rewrite_llm)
         logger.info(f"[Agent] 开始处理会话 {session_id}，历史已微压缩")
 
-        # 2. 优化点 (T10): asyncio.timeout 超时熔断机制
+        # 2. 优化点 (T10): asyncio.timeout 超时熔断机制 (支持 Python 3.10+ 双向兼容)
         try:
-            async with asyncio.timeout(AGENT_TIMEOUT):
-                response = await agent_executor.ainvoke({
-                    "input": question,
-                    "chat_history": chat_history_str
-                })
+            if hasattr(asyncio, "timeout"):
+                async with asyncio.timeout(AGENT_TIMEOUT):
+                    response = await agent_executor.ainvoke({
+                        "input": question,
+                        "chat_history": chat_history_str
+                    })
+            else:
+                response = await asyncio.wait_for(
+                    agent_executor.ainvoke({
+                        "input": question,
+                        "chat_history": chat_history_str
+                    }),
+                    timeout=AGENT_TIMEOUT
+                )
         except asyncio.TimeoutError:
             logger.warning(f"[Agent] 会话 {session_id} 执行超时 ({AGENT_TIMEOUT}s)，触发超时熔断降级")
             return {

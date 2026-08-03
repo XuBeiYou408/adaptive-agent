@@ -48,8 +48,11 @@ def with_retry(
             last_err = None
             for attempt in range(max_retries):
                 try:
-                    async with asyncio.timeout(timeout):
-                        return await func(*args, **kwargs)
+                    if hasattr(asyncio, "timeout"):
+                        async with asyncio.timeout(timeout):
+                            return await func(*args, **kwargs)
+                    else:
+                        return await asyncio.wait_for(func(*args, **kwargs), timeout=timeout)
                 except TRANSIENT_EXCEPTIONS as e:
                     last_err = e
                     if attempt < max_retries - 1:
