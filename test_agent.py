@@ -58,9 +58,9 @@ async def test_tools():
     calc_res = jisuanqi_tool.invoke("2**10 + 24")
     print(f"计算器测试 (2**10 + 24): {calc_res}")
     
-    # 测试网页搜索
-    search_res = wangye_sousuo_tool.invoke("Python 3.12 什么时候发布")
-    print(f"网页搜索测试 (Python 3.12 什么时候发布): {search_res[:150]}...")
+    # 测试网页搜索 (支持 Firecrawl 驱动)
+    search_res = wangye_sousuo_tool.invoke("Python 3.12 release notes")
+    print(f"网页搜索测试 (Python 3.12 release notes): {search_res[:150]}...")
 
 async def test_agent():
     print("\n==== 4. 测试 Agent 思考与多轮对话 ====")
