@@ -23,10 +23,17 @@ function loadHistory() {
   }
 }
 
+function generateUUID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return 'uuid-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 9)
+}
+
 function saveToHistory(question, answer, costTime) {
   const history = loadHistory()
   history.unshift({
-    id: crypto.randomUUID(),
+    id: generateUUID(),
     timestamp: new Date().toLocaleString('zh-CN'),
     question,
     answer,
@@ -50,12 +57,12 @@ async function handleSend(question) {
       abortController.value = controller
 
       let firstToken = true
-      for await (const token of streamQuestion(question, controller.signal)) {
+      for await (const chunk of streamQuestion(question, controller.signal, store.currentSessionId)) {
         if (firstToken) {
           thinking.value = false
           firstToken = false
         }
-        store.addAssistantChunk(token)
+        store.addAssistantChunk(chunk)
         await nextTick()
         if (messagesContainer.value) {
           messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
@@ -63,11 +70,9 @@ async function handleSend(question) {
       }
       const costTime = parseFloat(((Date.now() - startTime) / 1000).toFixed(2))
       store.finishStreaming(costTime)
-      const lastMsg = store.messages[store.messages.length - 1]
-      saveToHistory(question, lastMsg?.content || '', costTime)
     } catch (e) {
       if (e.name !== 'AbortError') {
-        store.addAssistantChunk('请求失败: ' + e.message)
+        store.addAssistantChunk({ type: 'content', content: '请求失败: ' + e.message })
       }
       store.isStreaming = false
       thinking.value = false
@@ -75,11 +80,10 @@ async function handleSend(question) {
   } else {
     try {
       const result = await askQuestion(question)
-      store.addAssistantChunk(result.answer)
+      store.addAssistantChunk({ type: 'content', content: result.answer })
       store.finishStreaming(result.cost_time)
-      saveToHistory(question, result.answer, result.cost_time)
     } catch (e) {
-      store.addAssistantChunk('请求失败: ' + e.message)
+      store.addAssistantChunk({ type: 'content', content: '请求失败: ' + e.message })
       store.isStreaming = false
     }
     thinking.value = false
@@ -99,7 +103,7 @@ function handleStop() {
 }
 
 function handleClear() {
-  store.clearMessages()
+  store.createNewSession()
 }
 
 function getTodayLabel() {

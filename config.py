@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 # ==================== CUDA 安全检测与自动降级 ====================
 def _jian_ce_cuda_anquan() -> bool:
-    if "ANTIGRAVITY_TRAJECTORY_ID" in os.environ or "ANTIGRAPVITY_TRAJECTORY_ID" in os.environ:
+    if "ANTIGRAVITY_TRAJECTORY_ID" in os.environ:
         return False
     try:
         res = subprocess.run(
@@ -34,6 +34,20 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 load_dotenv()
 folder_path = os.getenv('YUAN_SUCAI_PATH')
 LOCAL_DB_PATH = os.getenv('LOCAL_DB_PATH', './faiss-db')
+REDIS_URL = os.getenv('REDIS_URL', None)
+CACHE_HMAC_KEY = os.getenv('CACHE_HMAC_KEY', '')
+
+# 安全鉴权与 API Keys（修复 A：支持显式 AUTH_ENABLED 开关控制）
+API_KEYS = set([k.strip() for k in os.getenv('API_KEYS', '').split(',') if k.strip()])
+AUTH_ENABLED = os.getenv('AUTH_ENABLED', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+# 启动校验 (项目 3 修复: 校验关键环境变量)
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+DEEPSEEK_API_URL = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com")
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "fc-b1659da2e7bf49c7b1d275084ecc1092")
+if not DEEPSEEK_API_KEY:
+    import warnings
+    warnings.warn("警告：缺少环境变量 DEEPSEEK_API_KEY，大模型请求可能会失败！", UserWarning)
 
 # ==================== 统一系统超参数配置区 ====================
 # 检索链路配置

@@ -24,13 +24,9 @@ def _ensure_reranker_loaded() -> None:
         except RuntimeError as e:
             if "out of memory" in str(e).lower() or "cuda" in str(e).lower():
                 logger.warning("显存不足，BGE Reranker 正在安全降级到 CPU 加载...")
-                old_cuda = os.environ.get("CUDA_VISIBLE_DEVICES", None)
-                os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+                torch.cuda.empty_cache()
+                os.environ["CUDA_VISIBLE_DEVICES"] = ""
                 reranker = FlagReranker(reranker_path, use_fp16=False)
-                if old_cuda is not None:
-                    os.environ["CUDA_VISIBLE_DEVICES"] = old_cuda
-                else:
-                    del os.environ["CUDA_VISIBLE_DEVICES"]
                 logger.info("BGE Reranker 降级到 CPU 加载完成。")
             else:
                 raise e

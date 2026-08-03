@@ -7,7 +7,7 @@ const router = useRouter()
 const store = useChatStore()
 
 function handleNewChat() {
-  store.clearMessages()
+  store.createNewSession()
   router.push('/')
 }
 </script>

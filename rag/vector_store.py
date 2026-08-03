@@ -1,9 +1,11 @@
-from config import LOCAL_DB_PATH, folder_path
+from config import LOCAL_DB_PATH, folder_path, CACHE_HMAC_KEY
 import os
 import pickle
 import json
 import hashlib
+import hmac
 import logging
+import threading
 from typing import Tuple, List, Dict, Any
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyMuPDFLoader, TextLoader
@@ -14,6 +16,14 @@ from rag.splitter import pdf_qingxi, md_qingxi
 logger = logging.getLogger(__name__)
 
 ANIFEST_PATH = os.path.join(LOCAL_DB_PATH, "manifest.json") if LOCAL_DB_PATH else "local_db/manifest.json"
+
+# ==================== 修复 B：基于序列化载荷的 HMAC 签名校验助手 ====================
+def _compute_payload_sig(payload: bytes) -> str:
+    """基于序列化载荷字节的 HMAC-SHA256 签名，签名绑定内容，防置换攻击"""
+    if not CACHE_HMAC_KEY:
+        return ""
+    payload_hash = hashlib.sha256(payload).hexdigest()
+    return hmac.new(CACHE_HMAC_KEY.encode('utf-8'), payload_hash.encode('utf-8'), hashlib.sha256).hexdigest()
 
 # ==================== FAISS 手动存取兼容 ====================
 def _faiss_save(xiangliangshujuku: FAISS, folder_path: str, index_name: str = "xby") -> None:
@@ -29,8 +39,15 @@ def _faiss_save(xiangliangshujuku: FAISS, folder_path: str, index_name: str = "x
     idx_path = os.path.join(folder_path, f"{index_name}.faiss")
     pkl_path = os.path.join(folder_path, f"{index_name}.pkl")
     faiss.write_index(cpu_index, idx_path)
+    
+    pkl_bytes = pickle.dumps((xiangliangshujuku.docstore, xiangliangshujuku.index_to_docstore_id))
     with open(pkl_path, "wb") as f:
-        pickle.dump((xiangliangshujuku.docstore, xiangliangshujuku.index_to_docstore_id), f)
+        f.write(pkl_bytes)
+        
+    if CACHE_HMAC_KEY:
+        with open(os.path.join(folder_path, f"{index_name}.sig"), "w", encoding="utf-8") as sf:
+            json.dump({"sig": _compute_payload_sig(pkl_bytes)}, sf)
+            
     logger.info(f"向量数据库成功持久化到本地目录: {folder_path}")
 
 def _faiss_load(folder_path: str, index_name: str = "xby") -> FAISS:
@@ -38,8 +55,20 @@ def _faiss_load(folder_path: str, index_name: str = "xby") -> FAISS:
     idx_path = os.path.join(folder_path, f"{index_name}.faiss")
     pkl_path = os.path.join(folder_path, f"{index_name}.pkl")
     index = faiss.read_index(idx_path)
+    
     with open(pkl_path, "rb") as f:
-        docstore, index_to_docstore_id = pickle.load(f)
+        pkl_bytes = f.read()
+        
+    if CACHE_HMAC_KEY:
+        sig_path = os.path.join(folder_path, f"{index_name}.sig")
+        if not os.path.exists(sig_path):
+            raise ValueError("向量库签名文件缺失，拒绝加载")
+        with open(sig_path, "r", encoding="utf-8") as sf:
+            sig_data = json.load(sf)
+        if not hmac.compare_digest(sig_data.get("sig", ""), _compute_payload_sig(pkl_bytes)):
+            raise ValueError("向量库 HMAC 签名校验失败，拒绝加载")
+            
+    docstore, index_to_docstore_id = pickle.loads(pkl_bytes)
     return FAISS(embeddings, index, docstore, index_to_docstore_id)
 
 # ==================== 文件状态与哈希扫描器 ====================
@@ -131,7 +160,13 @@ def qi_dong_lu_jin() -> Tuple[FAISS, List[Document]]:
     if not db_exists or modified_files or deleted_files:
         db, safe_docs = quan_liang_chong_jian(current_states)
     elif added_files:
-        db = zeng_liang_zhui_jia(added_files, current_states, old_manifest)
+        # 修复 E：增量追加失败时捕获异常并触发全量重建自愈机制
+        try:
+            db = zeng_liang_zhui_jia(added_files, current_states, old_manifest)
+        except Exception as e:
+            logger.warning(f"增量更新失败（{e}），触发全量重建自愈机制...")
+            db, safe_docs = quan_liang_chong_jian(current_states)
+            return db, safe_docs
         from rag.loader import load_all_documents
         pdf_list, md_list, _ = load_all_documents()
         safe_docs = pdf_qingxi(pdf_list) + md_qingxi(md_list)
@@ -140,8 +175,8 @@ def qi_dong_lu_jin() -> Tuple[FAISS, List[Document]]:
         try:
             db = _faiss_load(LOCAL_DB_PATH)
         except Exception as e:
-            # 优化点 (T7): 向量库损坏自愈
-            logger.warning(f"本地向量库文件损坏 ({e})，触发自动全量重建自愈机制...")
+            # 优化点 (T7): 向量库损坏自愈（如 HMAC 签名缺失/校验失败时优雅自愈）
+            logger.warning(f"本地向量库文件损坏或签名失效 ({e})，触发自动全量重建自愈机制...")
             db, safe_docs = quan_liang_chong_jian(current_states)
             return db, safe_docs
             
@@ -152,6 +187,7 @@ def qi_dong_lu_jin() -> Tuple[FAISS, List[Document]]:
     return db, safe_docs
 
 # ==================== 优化点 (T1): 惰性初始化工厂与单例缓存 ====================
+_vs_lock = threading.Lock()
 _db_instance: FAISS | None = None
 _safe_docs_cache: List[Document] | None = None
 
@@ -162,7 +198,9 @@ def get_vector_store() -> Tuple[FAISS, List[Document]]:
     """
     global _db_instance, _safe_docs_cache
     if _db_instance is None or _safe_docs_cache is None:
-        _db_instance, _safe_docs_cache = qi_dong_lu_jin()
+        with _vs_lock:
+            if _db_instance is None or _safe_docs_cache is None:
+                _db_instance, _safe_docs_cache = qi_dong_lu_jin()
     return _db_instance, _safe_docs_cache
 
 # 动态属性/魔术加载以兼容原有的全局变量引用
@@ -187,6 +225,15 @@ class _LazyDocsProxy(list):
     def __getitem__(self, item):
         self._ensure_loaded()
         return super().__getitem__(item)
+    def __bool__(self):
+        self._ensure_loaded()
+        return super().__bool__()
+    def __contains__(self, item):
+        self._ensure_loaded()
+        return super().__contains__(item)
+    def __repr__(self):
+        self._ensure_loaded()
+        return f"LazyDocsProxy({super().__repr__()})"
 
 xiangliangshujuku = _LazyVectorDBProxy()
 safe_all_wenjian = _LazyDocsProxy()

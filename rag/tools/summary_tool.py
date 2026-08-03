@@ -26,8 +26,8 @@ async def wendang_zhaiyao_tool(topic: str) -> str:
     输出：大模型基于检索文档生成的结构化摘要。
     """
     try:
-        # 1. 检索相关的 Document 列表
-        docs = await zhaohui_and_rerank(topic, rerank_limit=25, return_documents=True)
+        # 1. 检索相关的 Document 列表 (R2-H3 调整安全上限)
+        docs = await zhaohui_and_rerank(topic, rerank_limit=8, return_documents=True)
         if not docs:
             return f"抱歉，在知识库中未检索到任何关于 '{topic}' 的相关资料，无法生成摘要。"
         
@@ -36,7 +36,18 @@ async def wendang_zhaiyao_tool(topic: str) -> str:
         for idx, doc in enumerate(docs, start=1):
             source = doc.metadata.get('source', '未知文件')
             context_list.append(f"[文档{idx}] 来源: {source}\n{doc.page_content}")
-        context_str = "\n\n".join(context_list)
+            
+        # R2-H3 修复：引入 Token / 字符预算截断，防止爆主 LLM 窗口
+        MAX_CONTEXT_CHARS = 6000
+        truncated_context = []
+        total_chars = 0
+        for item in context_list:
+            if total_chars + len(item) > MAX_CONTEXT_CHARS:
+                break
+            truncated_context.append(item)
+            total_chars += len(item)
+            
+        context_str = "\n\n".join(truncated_context)
         
         # 3. 调用大模型生成摘要
         zhaiyao_chain = zhaiyao_prompt | llm | StrOutputParser()

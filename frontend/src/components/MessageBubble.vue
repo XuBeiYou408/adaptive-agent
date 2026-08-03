@@ -1,9 +1,50 @@
 <script setup>
-defineProps({
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { marked } from 'marked'
+
+marked.setOptions({
+  breaks: true,
+  gfm: true
+})
+
+const props = defineProps({
   message: {
     type: Object,
     required: true,
   },
+})
+
+const elapsedTime = ref(0)
+let timer = null
+
+onMounted(() => {
+  if (props.message.role === 'assistant' && props.message.isThinking) {
+    const startTime = props.message.timestamp || Date.now()
+    timer = setInterval(() => {
+      elapsedTime.value = parseFloat(((Date.now() - startTime) / 1000).toFixed(1))
+    }, 100)
+  }
+})
+
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+})
+
+function toggleCollapse() {
+  if (typeof props.message.isCollapsed === 'undefined') {
+    props.message.isCollapsed = false
+  } else {
+    props.message.isCollapsed = !props.message.isCollapsed
+  }
+}
+
+const renderedContent = computed(() => {
+  if (!props.message.content) return ''
+  try {
+    return marked.parse(props.message.content)
+  } catch (e) {
+    return props.message.content
+  }
 })
 </script>
 
@@ -13,9 +54,53 @@ defineProps({
       <span v-if="message.role === 'user'">你</span>
       <span v-else>AI</span>
     </div>
+
     <div class="bubble-body">
+      <!-- Assistant DeepSeek 风格深度思考面板 -->
+      <div
+        v-if="message.role === 'assistant' && (message.thought || message.isThinking)"
+        class="thinking-card"
+        :class="{ collapsed: message.isCollapsed }"
+      >
+        <div class="thinking-header" @click="toggleCollapse">
+          <div class="header-title">
+            <span class="think-icon-sparkle">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2v20M2 12h20M17 7l-10 10M7 7l10 10" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span v-if="message.isThinking" class="think-status-text">
+              正在思考... <span class="think-timer">({{ elapsedTime }}s)</span>
+            </span>
+            <span v-else class="think-status-text">
+              已深度思考 <span class="think-timer">(用时 {{ message.costTime != null ? message.costTime : elapsedTime }} 秒)</span>
+            </span>
+          </div>
+
+          <div class="header-action">
+            <span class="collapse-icon" :class="{ rotated: !message.isCollapsed }">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </span>
+          </div>
+        </div>
+
+        <div v-show="!message.isCollapsed" class="thinking-content">
+          <div class="thought-log">{{ message.thought || '思考逻辑推演中...' }}</div>
+        </div>
+      </div>
+
+      <!-- 核心回答正文区 (Markdown 渲染) -->
       <div :class="['bubble-content', message.role]">
-        <div class="content-text" v-text="message.content"></div>
+        <div v-if="message.role === 'user'" class="content-text">{{ message.content }}</div>
+        <div
+          v-else
+          class="content-markdown markdown-body"
+          v-html="renderedContent"
+        ></div>
+
+        <!-- 引用卡片 -->
         <div v-if="message.citations && message.citations.length" class="citations">
           <div
             v-for="(cite, idx) in message.citations"
@@ -30,8 +115,9 @@ defineProps({
           </div>
         </div>
       </div>
+
       <div v-if="message.costTime != null" class="bubble-meta">
-        耗时 {{ message.costTime }}s
+        响应耗时 {{ message.costTime }}s
       </div>
     </div>
   </div>
@@ -41,8 +127,9 @@ defineProps({
 .message-bubble {
   display: flex;
   gap: 12px;
-  max-width: 80%;
+  max-width: 85%;
   animation: fadeInUp 0.25s ease-out;
+  margin-bottom: 16px;
 }
 
 @keyframes fadeInUp {
@@ -78,12 +165,12 @@ defineProps({
 }
 
 .user .bubble-avatar {
-  background-color: var(--color-primary-container);
+  background-color: var(--color-primary-container, #004ac6);
   color: #fff;
 }
 
 .assistant .bubble-avatar {
-  background-color: var(--color-secondary);
+  background-color: #4f46e5;
   color: #fff;
 }
 
@@ -91,34 +178,194 @@ defineProps({
   display: flex;
   flex-direction: column;
   min-width: 0;
+  width: 100%;
 }
 
+/* === DeepSeek 深度思考卡片 === */
+.thinking-card {
+  margin-bottom: 10px;
+  border-radius: 10px;
+  background-color: #f7f8fa;
+  border: 1px solid #eaedf1;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.thinking-card:hover {
+  border-color: #dcdfe6;
+}
+
+.thinking-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  cursor: pointer;
+  user-select: none;
+  background-color: rgba(240, 242, 245, 0.6);
+}
+
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #606266;
+  font-weight: 500;
+}
+
+.think-icon-sparkle {
+  color: #4f46e5;
+  display: flex;
+  align-items: center;
+  animation: pulseSparkle 2s infinite ease-in-out;
+}
+
+@keyframes pulseSparkle {
+  0%, 100% { opacity: 0.6; transform: scale(0.95); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+.think-status-text {
+  font-size: 13px;
+  color: #606266;
+}
+
+.think-timer {
+  color: #909399;
+  font-size: 12px;
+  margin-left: 2px;
+}
+
+.collapse-icon {
+  display: flex;
+  align-items: center;
+  color: #909399;
+  transition: transform 0.25s ease;
+}
+
+.collapse-icon.rotated {
+  transform: rotate(180deg);
+}
+
+.thinking-content {
+  padding: 10px 14px;
+  border-top: 1px dashed #e4e7ed;
+  background-color: #fafafa;
+}
+
+.thought-log {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #66696e;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+/* === 正文 Bubble === */
 .bubble-content {
   padding: 14px 18px;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-lg, 12px);
   line-height: 1.7;
-  font: var(--text-body);
-  white-space: pre-wrap;
   word-break: break-word;
 }
 
 .bubble-content.user {
-  background-color: var(--color-primary-container);
+  background-color: var(--color-primary-container, #004ac6);
   color: #ffffff;
-  border-top-right-radius: var(--radius-sm);
+  border-top-right-radius: var(--radius-sm, 4px);
 }
 
 .bubble-content.assistant {
-  background-color: var(--color-surface);
-  color: #303133;
-  border-top-left-radius: var(--radius-sm);
-  box-shadow: var(--shadow-soft);
+  background-color: #ffffff;
+  color: #2c3e50;
+  border-top-left-radius: var(--radius-sm, 4px);
+  border: 1px solid #eef0f4;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.03);
 }
 
+.content-text {
+  white-space: pre-wrap;
+}
+
+/* Markdown 排版系统控制 */
+:deep(.markdown-body) {
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: #2c3e50;
+}
+
+:deep(.markdown-body p) {
+  margin: 0 0 10px 0;
+}
+
+:deep(.markdown-body p:last-child) {
+  margin-bottom: 0;
+}
+
+:deep(.markdown-body h1),
+:deep(.markdown-body h2),
+:deep(.markdown-body h3),
+:deep(.markdown-body h4) {
+  margin: 14px 0 8px 0;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #1f2937;
+}
+
+:deep(.markdown-body h1) { font-size: 1.25em; }
+:deep(.markdown-body h2) { font-size: 1.15em; }
+:deep(.markdown-body h3) { font-size: 1.05em; }
+
+:deep(.markdown-body ul),
+:deep(.markdown-body ol) {
+  padding-left: 20px;
+  margin: 6px 0 10px 0;
+}
+
+:deep(.markdown-body li) {
+  margin-bottom: 4px;
+}
+
+:deep(.markdown-body code) {
+  background-color: #f3f4f6;
+  color: #d97706;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+  font-family: SFMono-Regular, Consolas, monospace;
+}
+
+:deep(.markdown-body pre) {
+  background-color: #1e1e2e;
+  color: #cdd6f4;
+  padding: 12px 16px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+
+:deep(.markdown-body pre code) {
+  background-color: transparent;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+}
+
+:deep(.markdown-body blockquote) {
+  border-left: 4px solid #4f46e5;
+  margin: 10px 0;
+  padding: 6px 12px;
+  background-color: #f8fafc;
+  color: #475569;
+}
+
+/* Citations */
 .citations {
   margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px solid var(--color-outline-variant);
+  border-top: 1px solid var(--color-outline-variant, #e0e0e0);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -126,25 +373,19 @@ defineProps({
 
 .citation-card {
   display: flex;
-  gap: 0;
-  border-radius: var(--radius-md);
-  background-color: var(--color-surface-low);
+  border-radius: var(--radius-md, 6px);
+  background-color: var(--color-surface-low, #f5f7fa);
   overflow: hidden;
-  transition: background-color 0.2s;
-}
-
-.citation-card:hover {
-  background-color: #e8eaed;
 }
 
 .citation-bar {
   width: 4px;
   flex-shrink: 0;
-  background-color: var(--color-primary);
+  background-color: var(--color-primary, #004ac6);
 }
 
 .citation-info {
-  padding: 10px 14px;
+  padding: 8px 12px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -152,26 +393,21 @@ defineProps({
 }
 
 .citation-type {
-  font: var(--text-metadata);
-  color: var(--color-primary);
+  color: var(--color-primary, #004ac6);
   background-color: rgba(0, 74, 198, 0.08);
   padding: 2px 8px;
-  border-radius: var(--radius-pill);
-  text-transform: none;
-  letter-spacing: 0;
+  border-radius: 12px;
 }
 
 .citation-source {
-  color: var(--color-secondary);
+  color: #606266;
   font-size: 13px;
 }
 
 .bubble-meta {
-  font: var(--text-metadata);
+  font-size: 12px;
   color: #a8abb2;
   margin-top: 6px;
-  text-transform: none;
-  letter-spacing: 0;
 }
 
 .user .bubble-meta { text-align: right; }

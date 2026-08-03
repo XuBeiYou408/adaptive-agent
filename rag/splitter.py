@@ -4,8 +4,6 @@ import hashlib
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 
-
-
 # ==================== 文件的清洗与父子块的切分 ====================
 
 def pdf_qingxi(daichulipdf):
@@ -60,7 +58,8 @@ def md_qingxi(daichulimd):
         metadata = d_doc.metadata.copy()
         metadata["dad_id"] = d_id
         d_content = d_doc.page_content
-        temp_doc = Document(page_content=d_content, metadata=d_doc.metadata.copy())
+        # R2-M2 修复：确保 temp_doc 包含组装好的 dad_id metadata 字典
+        temp_doc = Document(page_content=d_content, metadata=metadata)
         sub_chunks = son_splitter.split_documents([temp_doc])
         for c_doc in sub_chunks:
             c_doc.metadata["dad_id"] = d_id

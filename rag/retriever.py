@@ -1,16 +1,19 @@
 import os
 import pickle
+import json
 import hashlib
+import hmac
 import logging
 import asyncio
+import threading
 from typing import List, Union, Dict, Any, Tuple
 from concurrent.futures import ThreadPoolExecutor
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
-from config import TOP_K_RECALL, LOCAL_DB_PATH, RERANK_LIMIT
+from config import TOP_K_RECALL, LOCAL_DB_PATH, RERANK_LIMIT, CACHE_HMAC_KEY
 from rag.vector_store import get_vector_store
 from rag.rewriter import question_rewriter
-from rag.reranker import reranker_doc
+from rag.reranker import reranker_doc as rerank_documents
 from rag.dedup import deduplicate_docs
 
 logger = logging.getLogger(__name__)
@@ -22,28 +25,55 @@ def get_or_build_bm25(documents: List[Document]) -> Union[BM25Retriever, None]:
     if not documents:
         return None
     try:
-        doc_hash = hashlib.md5(
-            (str(len(documents)) + documents[0].page_content[:100]).encode("utf-8")
-        ).hexdigest()
+        # H2 修复：遍历所有文档片段并做摘要哈希组合，避免单一首文档误判断
+        hasher = hashlib.md5()
+        hasher.update(str(len(documents)).encode("utf-8"))
+        for doc in documents:
+            hasher.update(doc.page_content[:200].encode("utf-8", errors="replace"))
+        doc_hash = hasher.hexdigest()
         
         if os.path.exists(BM25_CACHE_PATH):
             try:
                 with open(BM25_CACHE_PATH, "rb") as f:
-                    cached = pickle.load(f)
+                    cache_bytes = f.read()
+                cached = pickle.loads(cache_bytes)
                 if isinstance(cached, dict) and cached.get("hash") == doc_hash:
-                    logger.info("BM25 索引命中磁盘缓存，已快速载入")
+                    # 修复 D：绑定序列化载荷字节内容的 HMAC-SHA256 签名与 `.sig` 兄弟文件校验
+                    if CACHE_HMAC_KEY:
+                        sig_path = BM25_CACHE_PATH + ".sig"
+                        if not os.path.exists(sig_path):
+                            raise ValueError("BM25 缓存签名文件缺失")
+                        with open(sig_path, "r", encoding="utf-8") as sf:
+                            sig_data = json.load(sf)
+                        payload_hash = hashlib.sha256(cache_bytes).hexdigest()
+                        expected = hmac.new(CACHE_HMAC_KEY.encode('utf-8'), payload_hash.encode('utf-8'), hashlib.sha256).hexdigest()
+                        if not hmac.compare_digest(sig_data.get("sig", ""), expected):
+                            raise ValueError("BM25 缓存 HMAC 签名校验失败")
+                    logger.info("BM25 索引命中磁盘缓存，且载荷签名校验通过，已快速载入")
                     return cached["retriever"]
             except Exception as e:
-                logger.warning(f"读取 BM25 磁盘缓存失败: {e}，将重新构建")
+                logger.warning(f"读取 BM25 磁盘缓存失败或校验未通过: {e}，将重新构建")
 
         logger.info("正在构建 BM25 关键词检索索引...")
         bm25_retriever = BM25Retriever.from_documents(documents)
         bm25_retriever.k = TOP_K_RECALL
         
         try:
+            cache_payload = {"hash": doc_hash, "retriever": bm25_retriever}
+            cache_bytes = pickle.dumps(cache_payload)
             with open(BM25_CACHE_PATH, "wb") as f:
-                pickle.dump({"hash": doc_hash, "retriever": bm25_retriever}, f)
-            logger.info("BM25 索引已被成功序列化缓存至本地磁盘")
+                f.write(cache_bytes)
+            if CACHE_HMAC_KEY:
+                payload_hash = hashlib.sha256(cache_bytes).hexdigest()
+                sig = hmac.new(CACHE_HMAC_KEY.encode('utf-8'), payload_hash.encode('utf-8'), hashlib.sha256).hexdigest()
+                with open(BM25_CACHE_PATH + ".sig", "w", encoding="utf-8") as sf:
+                    json.dump({"sig": sig}, sf)
+            # 加强磁盘存储权限
+            try:
+                os.chmod(BM25_CACHE_PATH, 0o600)
+            except Exception:
+                pass
+            logger.info("BM25 索引已被成功序列化缓存至本地磁盘（已附加载荷 HMAC 签名）")
         except Exception as e:
             logger.warning(f"写入 BM25 磁盘缓存失败: {e}")
             
@@ -54,12 +84,15 @@ def get_or_build_bm25(documents: List[Document]) -> Union[BM25Retriever, None]:
 
 # ==================== 优化点 (T1): 惰性检索器初始化与单例缓存 ====================
 _retriever_cache: Dict[str, Any] = {}
+_retriever_lock = threading.Lock()
 
 def get_retrievers() -> Tuple[Any, Any]:
     if "vector" not in _retriever_cache:
-        db, docs = get_vector_store()
-        _retriever_cache["vector"] = db.as_retriever(search_kwargs={"k": TOP_K_RECALL})
-        _retriever_cache["bm25"] = get_or_build_bm25(docs)
+        with _retriever_lock:
+            if "vector" not in _retriever_cache:
+                db, docs = get_vector_store()
+                _retriever_cache["vector"] = db.as_retriever(search_kwargs={"k": TOP_K_RECALL})
+                _retriever_cache["bm25"] = get_or_build_bm25(docs)
     return _retriever_cache["vector"], _retriever_cache["bm25"]
 
 # 兼容传统全局引用的 Lazy 代理

@@ -1,9 +1,13 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
+import { useChatStore } from '../stores/chat.js'
 import HistoryList from '../components/HistoryList.vue'
 import HistoryDetail from '../components/HistoryDetail.vue'
 
-const HISTORY_KEY = 'rag_chat_history'
+const SESSIONS_STORAGE_KEY = 'rag_sessions_history'
+const router = useRouter()
+const chatStore = useChatStore()
 
 const conversations = ref([])
 const selected = ref(null)
@@ -12,8 +16,29 @@ const timeFilter = ref('all')
 
 function loadHistory() {
   try {
-    const raw = localStorage.getItem(HISTORY_KEY)
-    conversations.value = raw ? JSON.parse(raw) : []
+    const raw = localStorage.getItem(SESSIONS_STORAGE_KEY)
+    if (raw) {
+      conversations.value = JSON.parse(raw)
+    } else {
+      // 兼容可能存在的旧版 rag_chat_history
+      const oldRaw = localStorage.getItem('rag_chat_history')
+      if (oldRaw) {
+        const oldItems = JSON.parse(oldRaw)
+        conversations.value = oldItems.map(item => ({
+          sessionId: item.id || ('session-' + Math.random().toString(36).substring(2, 7)),
+          title: item.question || '历史对话',
+          timestamp: item.timestamp || new Date().toLocaleString('zh-CN'),
+          userMsgCount: 1,
+          messages: [
+            { role: 'user', content: item.question, timestamp: Date.now() },
+            { role: 'assistant', content: item.answer, costTime: item.costTime, timestamp: Date.now() }
+          ]
+        }))
+        localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(conversations.value))
+      } else {
+        conversations.value = []
+      }
+    }
   } catch {
     conversations.value = []
   }
@@ -25,18 +50,23 @@ function handleSelect(conv) {
   selected.value = conv
 }
 
-function handleDelete(id) {
-  conversations.value = conversations.value.filter(c => c.id !== id)
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(conversations.value))
-  if (selected.value?.id === id) {
+function handleDelete(sessionId) {
+  conversations.value = conversations.value.filter(c => c.sessionId !== sessionId)
+  localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(conversations.value))
+  if (selected.value?.sessionId === sessionId) {
     selected.value = null
   }
+}
+
+function handleResume(sessionId) {
+  chatStore.loadSession(sessionId)
+  router.push('/')
 }
 
 function handleClearAll() {
   conversations.value = []
   selected.value = null
-  localStorage.removeItem(HISTORY_KEY)
+  localStorage.removeItem(SESSIONS_STORAGE_KEY)
 }
 
 const filteredConversations = computed(() => {
@@ -44,10 +74,11 @@ const filteredConversations = computed(() => {
 
   if (searchText.value.trim()) {
     const q = searchText.value.trim().toLowerCase()
-    list = list.filter(c =>
-      c.question.toLowerCase().includes(q) ||
-      c.answer.toLowerCase().includes(q)
-    )
+    list = list.filter(c => {
+      const matchTitle = c.title?.toLowerCase().includes(q)
+      const matchMsgs = c.messages?.some(m => m.content?.toLowerCase().includes(q))
+      return matchTitle || matchMsgs
+    })
   }
 
   if (timeFilter.value === '7days') {
@@ -108,14 +139,18 @@ const filteredConversations = computed(() => {
 
       <HistoryList
         :conversations="filteredConversations"
-        :selected-id="selected?.id"
+        :selected-id="selected?.sessionId"
         @select="handleSelect"
         @delete="handleDelete"
       />
     </div>
 
     <div class="history-right">
-      <HistoryDetail v-if="selected" :conversation="selected" />
+      <HistoryDetail
+        v-if="selected"
+        :conversation="selected"
+        @resume="handleResume"
+      />
       <div v-else class="empty-detail">
         <div class="empty-art">
           <svg width="100" height="100" viewBox="0 0 100 100" fill="none">

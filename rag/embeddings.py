@@ -36,8 +36,10 @@ class BGEEmbeddings(Embeddings):
                 batch, normalize_embeddings=True, show_progress_bar=False
             )
             all_embeddings.extend(batch_embs.tolist())
-            if self.device == "cuda":
-                torch.cuda.empty_cache()
+            
+        # R2-L4 修复：在全部批次推理完成后清理一次，避免循环内强制 GPU-CPU 流同步造成性能损耗
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
                 
         return all_embeddings
 

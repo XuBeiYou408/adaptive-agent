@@ -6,39 +6,40 @@ defineProps({
 
 const emit = defineEmits(['select', 'delete'])
 
-function getStatus(conv) {
-  if (conv.costTime != null && conv.costTime < 3) return 'success'
-  return 'history'
+function getLastAnswer(conv) {
+  if (!conv.messages || conv.messages.length === 0) return '暂无答复'
+  const lastAi = [...conv.messages].reverse().find(m => m.role === 'assistant')
+  return lastAi ? lastAi.content : '单轮问答'
 }
 </script>
 
 <template>
   <div class="history-list">
     <div v-if="conversations.length === 0" class="list-empty">
-      <el-empty description="暂无匹配记录" :image-size="48" />
+      <el-empty description="暂无匹配会话" :image-size="48" />
     </div>
     <div
       v-for="conv in conversations"
-      :key="conv.id"
-      :class="['history-item', { active: conv.id === selectedId }]"
+      :key="conv.sessionId"
+      :class="['history-item', { active: conv.sessionId === selectedId }]"
       @click="emit('select', conv)"
     >
       <div class="item-main">
         <div class="item-top">
-          <span :class="['item-status', getStatus(conv)]">
-            {{ getStatus(conv) === 'success' ? '成功' : '历史' }}
+          <span class="item-status history">
+            {{ (conv.userMsgCount || 1) + ' 轮对话' }}
           </span>
           <span class="item-time">{{ conv.timestamp }}</span>
         </div>
-        <div class="item-question">{{ conv.question }}</div>
-        <div class="item-preview">{{ conv.answer?.slice(0, 80) }}{{ conv.answer?.length > 80 ? '...' : '' }}</div>
+        <div class="item-question">{{ conv.title }}</div>
+        <div class="item-preview">{{ getLastAnswer(conv).slice(0, 70) }}{{ getLastAnswer(conv).length > 70 ? '...' : '' }}</div>
       </div>
       <div class="item-actions">
         <el-button
           text
           size="small"
           class="hover-action"
-          @click.stop="emit('delete', conv.id)"
+          @click.stop="emit('delete', conv.sessionId)"
         >
           <el-icon :size="14"><Delete /></el-icon>
         </el-button>
