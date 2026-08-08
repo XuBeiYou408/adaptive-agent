@@ -10,6 +10,8 @@ def valid_session_id(v: str) -> bool:
 # ==================== 请求结构 ====================
 class QueryRequest(BaseModel):
     question: str = Field(..., max_length=2000, description="用户提问内容")
+    provider: Optional[str] = Field("cloud", description="模型提供方: cloud 或 local")
+    model_name: Optional[str] = Field("deepseek-chat", description="调用的具体模型名称")
 
 # 修复 F：Pydantic v1 / v2 版本双向兼容层
 try:
@@ -19,6 +21,8 @@ try:
     class AgentQueryRequest(BaseModel):
         question: str = Field(..., max_length=2000, description="用户提问内容")
         session_id: str = Field("default_session", description="会话标识")
+        provider: Optional[str] = Field("cloud", description="模型提供方: cloud 或 local")
+        model_name: Optional[str] = Field("deepseek-chat", description="调用的具体模型名称")
 
         @_pv_field_validator("session_id")
         @classmethod
@@ -33,6 +37,8 @@ except ImportError:
     class AgentQueryRequest(BaseModel):
         question: str = Field(..., max_length=2000, description="用户提问内容")
         session_id: str = Field("default_session", description="会话标识")
+        provider: Optional[str] = Field("cloud", description="模型提供方: cloud 或 local")
+        model_name: Optional[str] = Field("deepseek-chat", description="调用的具体模型名称")
 
         @_pv_validator("session_id", allow_reuse=True)
         def _validate_session_id(cls, v: str) -> str:

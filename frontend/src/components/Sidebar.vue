@@ -46,6 +46,10 @@ const emit = defineEmits(['newChat'])
         <el-icon><Clock /></el-icon>
         <span>历史</span>
       </el-menu-item>
+      <el-menu-item index="/settings">
+        <el-icon><Setting /></el-icon>
+        <span>模型管理</span>
+      </el-menu-item>
     </el-menu>
 
     <div class="sidebar-footer">

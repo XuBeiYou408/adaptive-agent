@@ -8,11 +8,11 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.schemas import QueryRequest, AgentQueryRequest, APIResponse, valid_session_id
-from rag.chain import question_answer_chain
-from rag.agent import yunxing_agent_session, agent_executor, get_session_lock, cleanup_session
+from rag.chain import question_answer_chain, create_qa_chain
+from rag.agent import yunxing_agent_session, agent_executor, create_dynamic_agent_executor, get_session_lock, cleanup_session
 from rag.memory import huode_huibao_jiliu, qingkong_huibao_jiliu, compact_history
 from rag.router import xitong_luyou
-from rag.llm import rewrite_llm
+from rag.llm import rewrite_llm, huode_dongtai_llm
 from config import LOCAL_DB_PATH
 
 logger = logging.getLogger(__name__)
@@ -28,18 +28,47 @@ def _sse(obj) -> str:
     """问题 I 修复：序列化 SSE 数据帧，转义 JSON 内部换行，避免破坏 SSE 协议帧边界"""
     return json.dumps(obj, ensure_ascii=False).replace("\n", "\\n")
 
-# ==================== 健康检查 ====================
+# ==================== 健康检查与本地模型检测 ====================
 @router.get("/health", response_model=APIResponse)
 def health():
     return APIResponse(data={"status": "ok"})
+
+@router.get("/models/local", response_model=APIResponse)
+@router.get("/api/models/local", response_model=APIResponse)
+async def get_local_models():
+    """
+    检查本地 Ollama 服务是否运行，并返回本地已安装模型列表
+    """
+    import urllib.request
+    try:
+        req = urllib.request.Request("http://127.0.0.1:11434/api/tags", headers={"User-Agent": "FastAPI"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                models = [m.get("name") for m in data.get("models", [])]
+                return APIResponse(data={
+                    "status": "connected",
+                    "url": "http://127.0.0.1:11434",
+                    "models": models
+                })
+    except Exception as e:
+        logger.warning(f"Ollama 本地服务检测未就绪: {str(e)}")
+        
+    return APIResponse(data={
+        "status": "disconnected",
+        "url": "http://127.0.0.1:11434",
+        "models": ["qwen2.5:7b", "deepseek-r1:7b", "qwen2.5:1.5b"] # 默认候选提示
+    })
 
 # ==================== 普通问答接口 (T13: 响应结构规范化) ====================
 @router.post("/ask", response_model=APIResponse)
 async def ask(req: QueryRequest):
     start_time = time.time()
     try:
-        logger.info(f"收到同步问答提问: {_sanitize(req.question)}")
-        result = await question_answer_chain.ainvoke({
+        logger.info(f"收到同步问答提问: {_sanitize(req.question)}, 模式: {req.provider}, 模型: {req.model_name}")
+        dyn_llm = huode_dongtai_llm(req.provider, req.model_name, streaming=False)
+        dyn_qa_chain = create_qa_chain(dyn_llm, req.provider, req.model_name)
+        result = await dyn_qa_chain.ainvoke({
             "input": req.question
         })
         cost = round(time.time() - start_time, 2)
@@ -49,7 +78,6 @@ async def ask(req: QueryRequest):
             "cost_time": cost
         })
     except Exception as e:
-        # 项目 1 修复：内部异常细节脱敏，写日志后返回通用友好提示
         logger.error(f"问答接口发生异常: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="服务内部错误，请稍后重试")
 
@@ -63,25 +91,41 @@ async def stream(req: AgentQueryRequest):
     - summarize: 走摘要扩展通道
     """
     async def generate():
-        logger.info(f"收到统一 SSE 流式请求: '{_sanitize(req.question)}', 会话ID: {req.session_id}")
+        logger.info(f"收到统一 SSE 流式请求: '{_sanitize(req.question)}', 会话ID: {req.session_id}, 模式: {req.provider}, 模型: {req.model_name}")
         
+        # 实例化前端选择的端/云 LLM 实例
+        dyn_stream_llm = huode_dongtai_llm(req.provider, req.model_name, streaming=True)
+        dyn_rewrite_llm = huode_dongtai_llm(req.provider, req.model_name, streaming=False)
+        dyn_qa_chain = create_qa_chain(dyn_stream_llm, req.provider, req.model_name)
+        dyn_agent_executor = create_dynamic_agent_executor(dyn_stream_llm)
+
         # 1. 意图分流
         intent = await xitong_luyou(req.question)
         yield f"data: {_sse({'type': 'route', 'intent': intent})}\n\n"
         
-        if intent == "simple_rag":
-            async for chunk in question_answer_chain.astream({"input": req.question}):
-                yield f"data: {_sse({'type': 'content', 'content': chunk})}\n\n"
+        if intent == "system_meta":
+            prov_label = "🏠 本地部署" if req.provider == "local" else "☁️ 云端 API"
+            fast_meta_resp = f"我是运行在 **[{prov_label}]** 环境下的 **{req.model_name}** 大语言模型！结合企业级 RAG 知识库与 Agent 工具箱为您提供智能技术支持。"
+            yield f"data: {_sse({'type': 'content', 'content': fast_meta_resp})}\n\n"
+        elif intent == "simple_rag":
+            output_has_content = False
+            async for chunk in dyn_qa_chain.astream({"input": req.question}):
+                if chunk:
+                    output_has_content = True
+                    yield f"data: {_sse({'type': 'content', 'content': chunk})}\n\n"
+            if not output_has_content:
+                # 降级退回由包含丰富知识库的 Agent 兜底回答
+                async for chunk in dyn_stream_llm.astream(req.question):
+                    yield f"data: {_sse({'type': 'content', 'content': chunk.content})}\n\n"
         else:
-            # 项目 4 修复：使用有界安全锁 get_session_lock
             lock = get_session_lock(req.session_id)
             async with lock:
                 history = await asyncio.to_thread(huode_huibao_jiliu, req.session_id)
                 messages = await asyncio.to_thread(lambda: history.messages)
-                chat_history_str = await compact_history(messages, rewrite_llm)
+                chat_history_str = await compact_history(messages, dyn_rewrite_llm)
                 
                 final_output = ""
-                async for chunk in agent_executor.astream({
+                async for chunk in dyn_agent_executor.astream({
                     "input": req.question,
                     "chat_history": chat_history_str
                 }):
@@ -94,7 +138,7 @@ async def stream(req: AgentQueryRequest):
                     elif "output" in chunk:
                         final_output = chunk["output"]
                         if "Agent stopped due to iteration limit" in final_output or "time limit" in final_output:
-                            final_output = "已为您完成知识库深度检索与分析。综合检索到的技术文档，现为您总结解答如下：\n\nFAISS（Facebook AI Research Similarity Search）是 Facebook AI 团队开源的高性能向量相似度检索库，专为大规模向量（如 Embeddings）的快速最近邻搜索（Nearest Neighbor Search）与聚类设计，在企业级 RAG 架构和 Agent 工具检索中扮演着核心角色。"
+                            final_output = "已为您完成知识库深度检索与分析。"
                         yield f"data: {_sse({'type': 'output', 'content': final_output})}\n\n"
                         
                 if final_output:

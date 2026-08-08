@@ -136,21 +136,23 @@ def retrieve_single(q: str) -> List[Document]:
 executor = ThreadPoolExecutor(max_workers=5)
 
 async def zhaohui_and_rerank(
-    inputs: Union[Dict[str, str], str],
+    inputs: Union[Dict[str, Any], str],
     rerank_limit: int = RERANK_LIMIT,
-    return_documents: bool = False
+    return_documents: bool = False,
+    target_llm: Any = None
 ) -> Union[List[Document], str]:
     """
     接收用户问题，投机并行执行查询重写与基础召回，进行重排去重后返回结果。
     """
     if isinstance(inputs, dict):
         question = inputs['input']
+        target_llm = inputs.get('target_llm', target_llm)
     elif isinstance(inputs, str):
         question = inputs
     else:
         raise TypeError("zhaohui_and_rerank 接收到的 inputs 类型不合法，须为 dict 或 str")
     
-    rewriter_task = asyncio.create_task(question_rewriter(question))
+    rewriter_task = asyncio.create_task(question_rewriter(question, target_llm))
     original_retrieval_task = asyncio.to_thread(retrieve_single, question)
     
     queries, original_docs = await asyncio.gather(rewriter_task, original_retrieval_task)

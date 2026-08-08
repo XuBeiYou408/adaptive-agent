@@ -8,13 +8,18 @@ from utils.resilience import with_retry
 logger = logging.getLogger(__name__)
 
 # ==================== 定义查询重写（Rewrite）行为 (T9) ====================
-@with_retry(max_retries=2, timeout=15.0, fallback=None)
-async def _call_rewrite_llm(question: str):
-    return await rewrite_llm.ainvoke(rewrite_prompt.format_messages(question=question))
+@with_retry(max_retries=1, timeout=3.0, fallback=None)
+async def _call_rewrite_llm(question: str, target_llm=None):
+    use_llm = target_llm or rewrite_llm
+    return await use_llm.ainvoke(rewrite_prompt.format_messages(question=question))
 
-async def question_rewriter(question: str) -> List[str]:
+async def question_rewriter(question: str, target_llm=None) -> List[str]:
+    # 短查询（如“模型版本是”、“什么是FAISS”）无需额外扩写，直接秒级召回
+    if len((question or "").strip()) <= 8:
+        return [question]
+
     try:
-        response = await _call_rewrite_llm(question)
+        response = await _call_rewrite_llm(question, target_llm)
         if response is None:
             return [question]
         raw_text = response.content

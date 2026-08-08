@@ -4,22 +4,50 @@ export async function healthCheck() {
   return res.json()
 }
 
-export async function askQuestion(question) {
+export async function askQuestion(question, provider, modelName) {
+  let savedConfig = { provider: 'cloud', cloudModel: 'deepseek-chat', localModel: 'qwen2.5:7b' }
+  try {
+    const raw = localStorage.getItem('rag_model_config')
+    if (raw) savedConfig = JSON.parse(raw)
+  } catch (e) {}
+
+  const finalProvider = provider || savedConfig.provider || 'cloud'
+  const finalModel = modelName || (finalProvider === 'local' ? savedConfig.localModel : savedConfig.cloudModel)
+
   const res = await fetch('/ask', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({
+      question,
+      provider: finalProvider,
+      model_name: finalModel
+    }),
   })
   if (!res.ok) throw new Error('问答请求失败')
   return res.json()
 }
 
-export async function* streamQuestion(question, signal, sessionId = 'default_session') {
+export async function* streamQuestion(question, signal, sessionId = 'default_session', provider, modelName) {
   const cleanSessionId = String(sessionId).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) || 'default_session'
+  
+  let savedConfig = { provider: 'cloud', cloudModel: 'deepseek-chat', localModel: 'qwen2.5:7b' }
+  try {
+    const raw = localStorage.getItem('rag_model_config')
+    if (raw) savedConfig = JSON.parse(raw)
+  } catch (e) {}
+
+  const finalProvider = provider || savedConfig.provider || 'cloud'
+  const finalModel = modelName || (finalProvider === 'local' ? savedConfig.localModel : savedConfig.cloudModel)
+
   const res = await fetch('/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, session_id: cleanSessionId }),
+    body: JSON.stringify({
+      question,
+      session_id: cleanSessionId,
+      provider: finalProvider,
+      model_name: finalModel
+    }),
     signal,
   })
   if (!res.ok) throw new Error('流式请求失败')

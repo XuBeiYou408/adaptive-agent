@@ -1,11 +1,15 @@
 <script setup>
 import { ref, nextTick, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useChatStore } from '../stores/chat.js'
+import { useModelStore } from '../stores/model.js'
 import { streamQuestion, askQuestion } from '../api/index.js'
 import MessageList from '../components/MessageList.vue'
 import InputBox from '../components/InputBox.vue'
 
+const router = useRouter()
 const store = useChatStore()
+const modelStore = useModelStore()
 const loading = ref(false)
 const thinking = ref(false)
 const abortController = ref(null)
@@ -57,7 +61,7 @@ async function handleSend(question) {
       abortController.value = controller
 
       let firstToken = true
-      for await (const chunk of streamQuestion(question, controller.signal, store.currentSessionId)) {
+      for await (const chunk of streamQuestion(question, controller.signal, store.currentSessionId, modelStore.provider, modelStore.activeModelName)) {
         if (firstToken) {
           thinking.value = false
           firstToken = false
@@ -79,7 +83,7 @@ async function handleSend(question) {
     }
   } else {
     try {
-      const result = await askQuestion(question)
+      const result = await askQuestion(question, modelStore.provider, modelStore.activeModelName)
       store.addAssistantChunk({ type: 'content', content: result.answer })
       store.finishStreaming(result.cost_time)
     } catch (e) {
@@ -118,17 +122,26 @@ function getTodayLabel() {
     <header class="chat-header">
       <div class="header-left">
         <h1 class="chat-title">RAG 问答系统</h1>
-        <span class="chat-subtitle">LangChain + BGE + FAISS + DeepSeek</span>
+        <div class="chat-subtitle-box">
+          <span class="chat-subtitle">LangChain + BGE + FAISS</span>
+          <el-tag
+            :type="modelStore.provider === 'local' ? 'success' : 'primary'"
+            size="small"
+            effect="light"
+            class="model-active-tag"
+            @click="router.push('/settings')"
+            style="cursor: pointer; margin-left: 8px;"
+          >
+            {{ modelStore.provider === 'local' ? '🏠 本地部署: ' : '☁️ 云端 API: ' }}{{ modelStore.activeModelName }}
+          </el-tag>
+        </div>
       </div>
       <div class="header-right">
-        <el-badge :value="0" :max="99" :hidden="true">
-          <el-button text circle>
-            <el-icon :size="18"><Bell /></el-icon>
+        <el-tooltip content="模型管理与设置" placement="bottom">
+          <el-button text circle @click="router.push('/settings')">
+            <el-icon :size="18"><Setting /></el-icon>
           </el-button>
-        </el-badge>
-        <el-button text circle>
-          <el-icon :size="18"><Setting /></el-icon>
-        </el-button>
+        </el-tooltip>
         <el-button text>
           <el-icon :size="16" style="margin-right:4px"><Download /></el-icon>
           导出数据

@@ -12,15 +12,22 @@ rewrite_prompt = ChatPromptTemplate([
     ("user", "{question}")
 ])
 
-# ==================== LLM的提示词 ====================
-system_prompt = (
-    "你是一个专业的 AI 技术导师。\n"
-    "请严格基于以下从用户知识库中检索到的资料回答问题。\n"
-    "如果没有相关内容，请回答：抱歉，在知识库中未找到。\n\n"
-    "【参考资料】:\n{context}"
-)
+# ==================== LLM的提示词工厂 ====================
+def huode_llm_prompt(provider: str = "cloud", model_name: str = "deepseek-chat"):
+    prov_label = "本地 Ollama 端侧部署" if (provider or "").lower() == "local" else "云端 API"
+    m_name = model_name or "deepseek-chat"
+    
+    sys_prompt = (
+        f"你是一个全能的企业级 AI 技术导师。\n"
+        f"【系统运行状态】：当前后端大语言模型运行在 [{prov_label}] 模式，调用模型标识为 [{m_name}]。\n\n"
+        f"回答指导原则：\n"
+        f"1. 优先结合下方【参考资料】中检索到的知识库内容解答。\n"
+        f"2. 若【参考资料】为空、未直接覆盖提问、或者用户提问属于系统能力/模型版本/通用技术/日常问候，请结合系统运行状态与你自身强大的通用知识库直接精准回答，禁止机械回答未找到！\n\n"
+        f"【参考资料】:\n{{context}}"
+    )
+    return ChatPromptTemplate([
+        ('system', sys_prompt),
+        ('user', '{input}')
+    ])
 
-llm_prompt = ChatPromptTemplate([
-    ('system', system_prompt),
-    ('user', '{input}')
-])
+llm_prompt = huode_llm_prompt("cloud", "deepseek-chat")

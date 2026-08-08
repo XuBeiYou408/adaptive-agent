@@ -35,6 +35,7 @@ gongju_list = [
 # ==================== 定义 ReAct Prompt 模板 ====================
 react_prompt = PromptTemplate.from_template(
     "你是一个全能的企业级 AI 技术导师，专门解答技术、架构与开发相关问题。\n"
+    "当你被询问关于底层模型或系统运行方式时，请直接诚实、准确地回答：系统基于企业级 RAG 架构与多 Agent 协同打造，支持云端 API 与本地端侧模型（如 Ollama Qwen2.5/DeepSeek）的动态灵活调度，结合向量知识库检索与网页搜索为你提供最精准的技术解答。\n"
     "为了圆满解答用户的问题，你可以分步骤思考并调用以下工具：\n\n"
     "{tools}\n\n"
     "【绝对格式语法协议 (STRICT FORMAT PROTOCOL)】：\n"
@@ -58,16 +59,20 @@ react_prompt = PromptTemplate.from_template(
 )
 
 # ==================== 创建 Agent 执行器 ====================
-agent = create_react_agent(llm, gongju_list, react_prompt)
+def create_dynamic_agent_executor(target_llm=None):
+    use_llm = target_llm or llm
+    dyn_agent = create_react_agent(use_llm, gongju_list, react_prompt)
+    return AgentExecutor(
+        agent=dyn_agent,
+        tools=gongju_list,
+        verbose=True,
+        max_iterations=AGENT_MAX_ITERATIONS,
+        handle_parsing_errors=True,
+        return_intermediate_steps=True
+    )
 
-agent_executor = AgentExecutor(
-    agent=agent,
-    tools=gongju_list,
-    verbose=True,
-    max_iterations=AGENT_MAX_ITERATIONS,
-    handle_parsing_errors=True,
-    return_intermediate_steps=True
-)
+agent = create_react_agent(llm, gongju_list, react_prompt)
+agent_executor = create_dynamic_agent_executor(llm)
 
 # 项目 4 修复：有界 Session Lock 管理，防止内存无限泄漏
 _session_locks: Dict[str, asyncio.Lock] = {}
